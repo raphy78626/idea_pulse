@@ -34,7 +34,7 @@ def db():
     for col in ("eng INTEGER DEFAULT 0", "verdict TEXT", "buildability INTEGER",
                 "ttm_days INTEGER", "what TEXT", "reason TEXT", "report_path TEXT", "nutshell TEXT",
                 "pitch TEXT", "capital INTEGER", "first_payment TEXT", "earn_verdict TEXT",
-                "proof TEXT", "buyer TEXT", "offer_money TEXT"):
+                "proof TEXT", "buyer TEXT", "offer_money TEXT", "sim_path TEXT"):
         try:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col}")
         except Exception:
@@ -512,8 +512,6 @@ DEEP_SYSTEM = ("You are a senior startup evaluator running a full workup for a s
                "Final call section is always reached.")
 
 
-def deep_eval(item_id, force=False):
-    conn = db(); conn.row_factory = sqlite3.Row
 def deep_eval(item_id, force=False, progress=None):
     """Full workup. progress(step, label) is called at each real phase so a UI can show progress."""
     say = progress or (lambda step, label: None)
