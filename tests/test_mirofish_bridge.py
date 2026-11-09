@@ -97,8 +97,25 @@ def test_expand_idea_falls_back_to_empty_on_llm_failure(monkeypatch):
     assert "no model" in model
 
 
-def test_count_named_actors_counts_only_capitalised_entries():
+def test_count_named_actors_counts_participant_lines():
     assert mirofish_bridge.count_named_actors(GOOD_EXPANSION) >= 3
+
+
+def test_count_named_actors_handles_lowercase_words_in_names():
+    text = "Market participants:\nRevenue operations manager - buyer\nHead of sales - buyer\nIT security reviewer - critic"
+    assert mirofish_bridge.count_named_actors(text) == 3
+
+
+def test_count_named_actors_handles_hyphenated_names():
+    text = "Market participants:\nLinkedIn Sales Navigator - incumbent\nApollo.io - competitor\nOutreach - competitor"
+    assert mirofish_bridge.count_named_actors(text) == 3
+
+
+def test_count_named_actors_ignores_problem_and_header_lines():
+    text = ("Problem: mid-market RevOps teams rebuild prospect lists every campaign.\n"
+            "Market participants:\n"
+            "Apollo.io - competitor\n")
+    assert mirofish_bridge.count_named_actors(text) == 1
 
 
 def test_count_named_actors_ignores_prose_only():

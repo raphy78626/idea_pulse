@@ -105,8 +105,9 @@ Rules:
 - Never invent facts about pricing, funding, or market share.
 - Do not evaluate or recommend. Map the market only."""
 
-# Capitalised multiword or dotted names on a dash-bulleted line, e.g. "Apollo.io - ..."
-_ACTOR_LINE = re.compile(r"^\s*([A-Z][\w.'&-]*(?:\s+[A-Z][\w.'&-]*)*)\s*[-\u2013\u2014]", re.M)
+# A participant line is `Label - description` (or en/em dash), the label being
+# 1-60 chars with no colon. Anchored so prose containing a hyphen cannot match.
+_ACTOR_LINE = re.compile(r"^[ \t]*([^:\n]{1,60}?)\s*[\u2013\u2014-]\s+\S", re.M)
 
 
 def count_named_actors(text):
@@ -230,7 +231,10 @@ def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation
     allowed, reason = check_seed_quality(expansion)
     if not allowed:
         raise BridgeError(
-            reason + " The idea record is too thin to simulate; add context or name the players."
+            reason
+            + " The idea record is too thin to simulate; add context or name the players."
+            + " (expansion length: %d characters, expansion model: %s)"
+            % (len(expansion), model)
         )
     say_once(2, "market mapped with %d participants" % count_named_actors(expansion))
 
