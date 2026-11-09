@@ -32,3 +32,43 @@ def test_rejects_short_report():
 def test_rejects_report_cut_off_mid_sentence():
     body = "# Report\n\n" + ("Sentence one is fine. " * 20) + "and then it stops mid"
     assert mirofish_bridge.report_is_complete(body) is False
+
+
+def test_seed_includes_title_meta_and_source():
+    seed = mirofish_bridge.build_seed("My idea", "some context", "Reddit")
+    assert "My idea" in seed
+    assert "some context" in seed
+    assert "Reddit" in seed
+
+
+def test_seed_unescapes_html_entities():
+    seed = mirofish_bridge.build_seed("AT&amp;T app", "&quot;quoted&quot;", "HN")
+    assert "AT&T app" in seed
+    assert '"quoted"' in seed
+    assert "&amp;" not in seed
+
+
+def test_seed_tolerates_missing_meta():
+    seed = mirofish_bridge.build_seed("Just a title", None, "Reddit")
+    assert "Just a title" in seed
+    assert len(seed) > 20
+
+
+def test_seed_truncates_absurd_titles():
+    seed = mirofish_bridge.build_seed("x" * 5000, "", "Reddit")
+    assert len(seed) < 6000
+
+
+def test_seed_includes_expansion_when_provided():
+    seed = mirofish_bridge.build_seed("T", "m", "Reddit", expansion="Apollo, Clay, ZoomInfo")
+    assert "Apollo, Clay, ZoomInfo" in seed
+
+
+def test_seed_omits_expansion_header_when_absent():
+    seed = mirofish_bridge.build_seed("T", "m", "Reddit")
+    assert "Market participants" not in seed
+
+
+def test_seed_includes_evaluation_excerpt():
+    seed = mirofish_bridge.build_seed("T", "m", "Reddit", evaluation="Verdict: SKIP 2/10")
+    assert "SKIP 2/10" in seed
