@@ -100,3 +100,79 @@ def test_pending_simulations_skips_completed(client):
     conn.commit(); conn.close()
     rows = ideapulse.pending_simulations(limit=10)
     assert [r["id"] for r in rows] == [], "items with a usable report must be skipped"
+
+
+def test_run_simulations_records_attempt_and_report(client, tmp_path, monkeypatch):
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET source='Reddit business ideas', verdict='BUILD' WHERE id=1")
+    conn.commit(); conn.close()
+
+    def fake_run(title, meta, source, on_stage=None, out_path=None, evaluation=""):
+        import pathlib
+        p = pathlib.Path(str(out_path))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# Report\n\n" + ("Body sentence. " * 30), encoding="utf-8")
+        return {"simulation_id": "sim_t", "report_path": str(p)}
+
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda: (True, ""))
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "run_simulation", fake_run)
+    result = ideapulse.run_simulations(limit=1, max_seconds=600)
+    assert result["done"] == 1
+    conn = ideapulse.db()
+    row = conn.execute("SELECT sim_path, sim_attempts FROM items WHERE id=1").fetchone()
+    conn.close()
+    assert row[0], "sim_path must be stored"
+    assert row[1] == 1, "attempt counter must increment"
+
+
+def test_run_simulations_records_failure_and_increments_attempts(client, monkeypatch):
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET source='Reddit business ideas', verdict='BUILD' WHERE id=1")
+    conn.commit(); conn.close()
+
+    def boom(*a, **k):
+        raise ideapulse.mirofish_bridge.BridgeError("only 1 named market participant(s) found")
+
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda: (True, ""))
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "run_simulation", boom)
+    result = ideapulse.run_simulations(limit=1, max_seconds=600)
+    assert result["failed"] == 1
+    conn = ideapulse.db()
+    row = conn.execute("SELECT sim_attempts, sim_error FROM items WHERE id=1").fetchone()
+    conn.close()
+    assert row[0] == 1
+    assert "named market participant" in row[1]
+
+
+def test_run_simulations_stops_at_wall_clock_cap(client, monkeypatch):
+    conn = ideapulse.db()
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO items (fetched_on,source,title,url,meta,verdict) VALUES (?,?,?,?,?,?)",
+            ("2026-11-09", "Reddit business ideas", "idea %d" % i, "http://y/%d" % i, "c", "BUILD"))
+    conn.commit(); conn.close()
+
+    def slow(title, meta, source, on_stage=None, out_path=None, evaluation=""):
+        raise ideapulse.mirofish_bridge.BridgeError("slow failure")
+
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda: (True, ""))
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "run_simulation", slow)
+    # no real sleeping: the cap is checked against a fake clock
+    ticks = {"n": 0}
+    real_time = ideapulse.time.time
+
+    def fake_time():
+        ticks["n"] += 1
+        return real_time() + ticks["n"] * 400
+
+    monkeypatch.setattr(ideapulse.time, "time", fake_time)
+    result = ideapulse.run_simulations(limit=3, max_seconds=600)
+    assert result["attempted"] < 3, "wall-clock cap must cut the pass short"
+
+
+def test_run_simulations_refuses_when_mirofish_down(client, monkeypatch):
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight",
+                        lambda: (False, "MiroFish is not running. Start it with x"))
+    result = ideapulse.run_simulations(limit=3, max_seconds=600)
+    assert result["attempted"] == 0
+    assert "MiroFish" in result["error"]

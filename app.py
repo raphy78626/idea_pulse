@@ -530,6 +530,68 @@ def pending_simulations(limit=3):
     return rows
 
 
+def run_simulations(limit=3, max_seconds=1800):
+    """Simulate reaction reports for eligible ideas. Safe to run from cron.
+
+    Bounded by wall-clock so an unattended run cannot overrun; failures are
+    recorded with a bounded attempt counter so a hopeless item is not retried
+    forever. Returns a summary dict.
+    """
+    started = time.time()
+    summary = {"attempted": 0, "done": 0, "failed": 0, "skipped": 0, "error": ""}
+
+    ok, hint = mirofish_bridge.preflight()
+    if not ok:
+        summary["error"] = hint
+        return summary
+
+    rows = pending_simulations(limit=limit)
+    if not rows:
+        return summary
+
+    base_dir = Path(__file__).parent
+    for row in rows:
+        if time.time() - started >= max_seconds:
+            summary["skipped"] += 1
+            continue
+        item_id = row["id"]
+        out_path = base_dir / "evaluations" / ("sim_%d.md" % item_id)
+        evaluation_md = ""
+        try:
+            conn0 = db()
+            ev = conn0.execute("SELECT report_path FROM items WHERE id=?", (item_id,)).fetchone()
+            conn0.close()
+            if ev and ev[0]:
+                evaluation_md = Path(ev[0]).read_text()[:1500]
+        except OSError:
+            evaluation_md = ""
+        summary["attempted"] += 1
+        try:
+            result = mirofish_bridge.run_simulation(
+                row["title"], row["meta"], row["source"],
+                out_path=out_path, evaluation=evaluation_md)
+            text = mirofish_bridge.read_report(result.get("report_path") or str(out_path))
+            if not text:
+                raise mirofish_bridge.BridgeError("report was empty or cut off")
+            conn = db()
+            conn.execute(
+                "UPDATE items SET sim_path=?, sim_attempts=COALESCE(sim_attempts,0)+1, sim_error=NULL WHERE id=?",
+                (str(out_path), item_id))
+            conn.commit(); conn.close()
+            summary["done"] += 1
+            print("[%s] simulated item %d -> %s" % (datetime.now(), item_id, out_path))
+        except Exception as exc:
+            message = str(exc)[:300]
+            conn = db()
+            conn.execute(
+                "UPDATE items SET sim_attempts=COALESCE(sim_attempts,0)+1, sim_error=? WHERE id=?",
+                (message, item_id))
+            conn.commit(); conn.close()
+            summary["failed"] += 1
+            print("[%s] simulation failed for item %d: %s" % (datetime.now(), item_id, message))
+    return summary
+
+
 DEEP_SYSTEM = ("You are a senior startup evaluator running a full workup for a solo dev in India "
                "(fast cash, micro-product). Be concrete and ruthless. Markdown output with these "
                "sections: ## Verdict (BUILD/WATCH/SKIP + score /10 + one-line)\n"
@@ -1435,6 +1497,24 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "evaluate":
         n, used = evaluate_items(int(sys.argv[2]) if len(sys.argv) > 2 else 25)
         print(f"[{datetime.now()}] evaluated {n} items | models: {json.dumps(used)}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "simulate":
+        dry = "--dry-run" in sys.argv
+        sim_limit = 3
+        for a in sys.argv[2:]:
+            if a.isdigit():
+                sim_limit = int(a)
+        if dry:
+            rows = pending_simulations(limit=sim_limit)
+            print("[%s] dry run: %d idea(s) would be simulated" % (datetime.now(), len(rows)))
+            for r in rows:
+                print("  %d  %s  |  %s" % (r["id"], r["source"], r["title"][:70]))
+        else:
+            s = run_simulations(limit=sim_limit, max_seconds=1800)
+            print("[%s] simulate: attempted=%d done=%d failed=%d skipped=%d %s"
+                  % (datetime.now(), s["attempted"], s["done"], s["failed"],
+                     s["skipped"], s["error"]))
+            if s["error"]:
+                sys.exit(1)
     else:
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8300)
