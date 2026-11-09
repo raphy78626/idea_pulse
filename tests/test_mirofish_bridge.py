@@ -170,3 +170,89 @@ def test_run_stage_always_passes_lang_en(monkeypatch):
     mirofish_bridge.run_stage(["health"])
     assert "--lang" in seen["cmd"]
     assert "en" in seen["cmd"]
+
+
+def test_preflight_reports_server_down_with_remedy(monkeypatch):
+    def boom(args, timeout=0):
+        raise mirofish_bridge.BridgeError("cannot reach MiroFish at http://127.0.0.1:5001")
+    monkeypatch.setattr(mirofish_bridge, "run_stage", boom)
+    ok, hint = mirofish_bridge.preflight()
+    assert ok is False
+    assert "mirofish_server.sh" in hint
+
+
+def test_preflight_passes_when_health_ok(monkeypatch):
+    monkeypatch.setattr(mirofish_bridge, "run_stage", lambda args, timeout=0: {"ok": True})
+    ok, hint = mirofish_bridge.preflight()
+    assert ok is True
+    assert hint == ""
+
+
+def test_run_simulation_reports_progress_stages(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, timeout=0):
+        calls.append(args[0])
+        if args[0] == "ontology":
+            return {"ok": True, "project_id": "proj_x"}
+        if args[0] == "build":
+            return {"ok": True, "graph_id": "g1", "node_count": 6}
+        if args[0] == "simulate":
+            return {"ok": True, "simulation_id": "sim_x", "rounds_run": 12}
+        if args[0] == "report":
+            return {"ok": True, "saved_to": str(tmp_path / "r.md"), "characters": 5000}
+        return {"ok": True}
+
+    monkeypatch.setattr(mirofish_bridge, "run_stage", fake_run)
+    monkeypatch.setattr(mirofish_bridge, "expand_idea", lambda t, m: ("Apollo.io - vendor\nClay - tool\nZoomInfo - vendor", "m"))
+    steps = []
+    result = mirofish_bridge.run_simulation(
+        "title", "meta", "Reddit",
+        on_stage=lambda pct, label: steps.append(pct),
+        out_path=tmp_path / "r.md")
+    assert result["simulation_id"] == "sim_x"
+    # health runs first as the preflight check
+    assert calls == ["health", "ontology", "build", "simulate", "report"]
+    assert steps == sorted(steps), "progress must never go backwards"
+    assert steps[-1] == 100
+
+
+def test_run_simulation_refuses_thin_seed(monkeypatch):
+    monkeypatch.setattr(mirofish_bridge, "run_stage", lambda args, timeout=0: {"ok": True})
+    monkeypatch.setattr(mirofish_bridge, "expand_idea", lambda t, m: ("prose only, no actors", "m"))
+    try:
+        mirofish_bridge.run_simulation("t", "m", "Reddit", out_path=None)
+    except mirofish_bridge.BridgeError as e:
+        assert "named market participant" in str(e)
+    else:
+        raise AssertionError("expected the quality gate to reject")
+
+
+def test_run_simulation_surfaces_stage_error(monkeypatch):
+    monkeypatch.setattr(mirofish_bridge, "expand_idea", lambda t, m: ("A - x\nB - y\nC - z", "m"))
+
+    def fake_run(args, timeout=0):
+        if args[0] == "health":
+            return {"ok": True}
+        if args[0] == "ontology":
+            return {"ok": True, "project_id": "proj_x"}
+        raise mirofish_bridge.BridgeError("graph build failed: model returned no JSON")
+    monkeypatch.setattr(mirofish_bridge, "run_stage", fake_run)
+    try:
+        mirofish_bridge.run_simulation("t", "m", "Reddit", out_path=None)
+    except mirofish_bridge.BridgeError as e:
+        assert "no JSON" in str(e)
+    else:
+        raise AssertionError("stage errors must propagate")
+
+
+def test_run_simulation_turns_zep_401_into_install_hint(monkeypatch):
+    def boom(args, timeout=0):
+        raise mirofish_bridge.BridgeError("status_code: 401, body: unauthorized")
+    monkeypatch.setattr(mirofish_bridge, "run_stage", boom)
+    try:
+        mirofish_bridge.run_simulation("t", "m", "Reddit", out_path=None)
+    except mirofish_bridge.BridgeError as e:
+        assert "install_local_graph.py" in str(e)
+    else:
+        raise AssertionError("expected a preflight failure")

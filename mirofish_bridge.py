@@ -27,6 +27,18 @@ STAGE_TIMEOUT_S = 1500
 MAX_TITLE_CHARS = 400
 MAX_META_CHARS = 1200
 
+STAGES = (
+    ("ontology", 0, 30, "mapping the market"),
+    ("build", 30, 55, "building the knowledge graph"),
+    ("simulate", 55, 85, "running agent reactions"),
+    ("report", 85, 100, "writing the report"),
+)
+
+SIM_REQUIREMENT = (
+    "How would prospective buyers, competitors, and critics react to this idea "
+    "being announced?"
+)
+
 
 def report_is_complete(markdown):
     # type: (str) -> bool
@@ -168,3 +180,95 @@ def run_stage(args, timeout=STAGE_TIMEOUT_S):
         detail = (proc.stderr or "").strip()[-400:]
         raise BridgeError("simulation CLI failed (%d): %s" % (proc.returncode, detail))
     return parse_envelope(proc.stdout or "")
+
+
+def preflight():
+    # type: () -> Tuple[bool, str]
+    """Confirm the MiroFish server is reachable; return a remedy hint on failure."""
+    try:
+        run_stage(["health"], timeout=30)
+    except BridgeError as exc:
+        message = str(exc)
+        if "cannot reach MiroFish" in message:
+            return False, (
+                "MiroFish is not running. Start it with "
+                "~/.hermes/skills/mlops/foresight/scripts/mirofish_server.sh start"
+            )
+        if "401" in message or "Zep" in message:
+            return False, (
+                "MiroFish is running but its local graph backend is not installed. Run "
+                "~/.hermes/tools/prediction/.venv/bin/python "
+                "~/.hermes/skills/mlops/foresight/scripts/install_local_graph.py"
+            )
+        return False, message
+    return True, ""
+
+
+def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation=""):
+    # type: (str, Optional[str], str, Optional[object], Optional[Path], str) -> Dict[str, object]
+    """Run all MiroFish stages for one idea. Raises BridgeError on any failure."""
+    say = on_stage or (lambda pct, label: None)
+    emitted = [0]
+
+    def say_once(pct, label):
+        # the pre-stage labels (0, 2) overlap the first stage's floor, so guard
+        # against the progress bar going backwards
+        if pct < emitted[0]:
+            return
+        emitted[0] = pct
+        say(pct, label)
+
+    ok, hint = preflight()
+    if not ok:
+        raise BridgeError(hint)
+
+    say_once(0, "mapping the market")
+    expansion, model = expand_idea(title, meta or "")
+    allowed, reason = check_seed_quality(expansion)
+    if not allowed:
+        raise BridgeError(
+            reason + " The idea record is too thin to simulate; add context or name the players."
+        )
+    say_once(2, "market mapped with %d participants" % count_named_actors(expansion))
+
+    seed = build_seed(title, meta, source, expansion=expansion, evaluation=evaluation)
+    workdir = Path(os.environ.get("TMPDIR") or "/tmp") / "ideapulse-sim"
+    workdir.mkdir(parents=True, exist_ok=True)
+    seed_path = workdir / ("seed-%s.txt" % abs(hash((title or "") + (meta or ""))))
+    seed_path.write_text(seed, encoding="utf-8")
+
+    project_id = ""
+    simulation_id = ""
+    saved = str(out_path) if out_path else ""
+
+    for stage, lo, hi, label in STAGES:
+        say_once(lo, label)
+        if stage == "ontology":
+            data = run_stage(["ontology", str(seed_path), "--requirement", SIM_REQUIREMENT,
+                              "--name", (title or "IdeaPulse idea")[:60]])
+            project_id = str(data.get("project_id") or "")
+            if not project_id:
+                raise BridgeError("ontology stage returned no project id")
+        elif stage == "build":
+            data = run_stage(["build", "--project-id", project_id])
+            if not data.get("graph_id"):
+                raise BridgeError("graph build returned no graph id")
+        elif stage == "simulate":
+            data = run_stage(["simulate", "--project-id", project_id, "--max-rounds", "12"])
+            simulation_id = str(data.get("simulation_id") or "")
+            if not simulation_id:
+                raise BridgeError("simulation stage returned no simulation id")
+        else:
+            report_args = ["report", "--simulation-id", simulation_id]
+            if saved:
+                report_args += ["--out", saved]
+            data = run_stage(report_args)
+            saved = str(data.get("saved_to") or saved)
+        say_once(hi, label)
+
+    return {
+        "project_id": project_id,
+        "simulation_id": simulation_id,
+        "report_path": saved,
+        "expansion_model": model,
+    }
