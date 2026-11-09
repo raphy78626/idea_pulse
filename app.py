@@ -11,6 +11,7 @@ from pathlib import Path
 import html
 
 import httpx
+import mirofish_bridge
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -794,6 +795,54 @@ def deepeval(item_id: int, force: int = 0, async_: int = 0):
         return {"job": jobs.start(f"Deep evaluating “{title}”", 2, work)}
     path, status = deep_eval(item_id, force=bool(force))
     return {"path": path, "status": status}
+
+
+@app.post("/simulate/{item_id}")
+@app.get("/simulate/{item_id}")
+def simulate(item_id: int, force: int = 0, async_: int = 0):
+    """Reaction simulation for one idea. async_=1 returns a job id, like deepeval."""
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    if not row:
+        return {"ok": False, "error": "item not found"}
+
+    if not force and row["sim_path"] and mirofish_bridge.read_report(row["sim_path"]):
+        return {"ok": True, "status": "existing", "path": row["sim_path"]}
+
+    base_dir = Path(__file__).parent
+    out_path = base_dir / "evaluations" / ("sim_%d.md" % item_id)
+    evaluation_md = ""
+    if row["report_path"]:
+        try:
+            evaluation_md = Path(row["report_path"]).read_text()[:1500]
+        except OSError:
+            evaluation_md = ""
+
+    def work(tick, label):
+        def on_stage(pct, msg):
+            label(msg)
+        result = mirofish_bridge.run_simulation(
+            row["title"], row["meta"], row["source"],
+            on_stage=on_stage, out_path=out_path, evaluation=evaluation_md)
+        text = mirofish_bridge.read_report(result.get("report_path") or str(out_path))
+        if not text:
+            raise RuntimeError("report was empty or cut off")
+        conn2 = db()
+        conn2.execute("UPDATE items SET sim_path=? WHERE id=?", (str(out_path), item_id))
+        conn2.commit(); conn2.close()
+        label("reaction simulation saved")
+        return {"path": str(out_path), "simulation_id": result.get("simulation_id")}
+
+    if async_:
+        import jobs
+        title = (row["title"] or "#%d" % item_id)[:70]
+        return {"job": jobs.start("Simulating %s" % title, 4, work)}
+    try:
+        result = work(lambda n: None, lambda msg: None)
+        return {"ok": True, "status": "new", "path": result["path"]}
+    except mirofish_bridge.BridgeError as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _inline(text):
