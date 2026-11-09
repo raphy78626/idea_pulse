@@ -1008,6 +1008,21 @@ def report(item_id: int):
                         .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
 
 
+@app.get("/simulation/{item_id}", response_class=HTMLResponse)
+def simulation_report(item_id: int):
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT sim_path FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    md = mirofish_bridge.read_report(row["sim_path"]) if row and row["sim_path"] else ""
+    if not md:
+        return HTMLResponse(
+            '<p style="font-family:sans-serif;padding:30px">No reaction simulation yet '
+            '— run 🎭 simulate first.</p>', status_code=404)
+    body = _md_to_html(md)
+    return HTMLResponse(REPORT_PAGE.replace("{{BODY}}", body)
+                        .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
+
+
 @app.post("/fetch")
 @app.get("/fetch")
 def fetch(async_: int = 0):

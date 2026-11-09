@@ -45,3 +45,19 @@ def test_simulate_reuses_existing_report_without_force(client, tmp_path, monkeyp
     r = client.get("/simulate/1")
     assert "existing" in r.json()["status"]
     assert called["n"] == 0
+
+
+def test_simulation_view_renders_report(client, tmp_path):
+    out = tmp_path / "sim_1.md"
+    out.write_text("# Report\n\n" + ("Body sentence. " * 30), encoding="utf-8")
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET sim_path=? WHERE id=1", (str(out),))
+    conn.commit(); conn.close()
+    r = client.get("/simulation/1")
+    assert r.status_code == 200
+    assert "Body sentence" in r.text
+
+
+def test_simulation_view_404_without_report(client):
+    r = client.get("/simulation/1")
+    assert r.status_code == 404
