@@ -45,6 +45,44 @@ SIM_REQUIREMENT = (
 # Sentence terminators across the languages MiroFish can emit reports in.
 _SENTENCE_END = re.compile(r"[.!?\"')\]\u3002\uff01\uff1f\u201d\u300d\u300f]\s*$")
 
+# Models occasionally write their deliberation into the report: XML tool-call
+# blocks and "Thought:" notes. MiroFish has no sanitizer for this, and the
+# leakage is model-dependent, so the bridge cleans the artifact it owns.
+_XML_BLOCK = re.compile(r"<(tool_call|thinking)\b[^>]*>.*?</\1>", re.S | re.I)
+_XML_OPEN_TAIL = re.compile(r"<(tool_call|thinking)\b[^>]*>.*\Z", re.S | re.I)
+_THOUGHT_LINE = re.compile(r"^\s*thought\s*:\s*", re.I)
+
+
+def sanitize_report(text):
+    # type: (Optional[str]) -> str
+    """Strip model deliberation that leaked into the report body."""
+    if not text:
+        return ""
+    needs_work = (
+        _XML_BLOCK.search(text) is not None
+        or _XML_OPEN_TAIL.search(text) is not None
+        or any(_THOUGHT_LINE.match(line) for line in text.split("\n"))
+    )
+    if not needs_work:
+        return text
+    out = _XML_BLOCK.sub("", text)
+    out = _XML_OPEN_TAIL.sub("", out)
+    kept = []
+    dropping = False
+    for line in out.split("\n"):
+        if _THOUGHT_LINE.match(line):
+            dropping = True
+            continue
+        if dropping:
+            if line.strip():
+                continue
+            dropping = False
+            continue
+        kept.append(line)
+    out = "\n".join(kept)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip() + "\n" if out.strip() else ""
+
 
 def report_is_complete(markdown):
     # type: (str) -> bool
@@ -324,4 +362,6 @@ def read_report(path):
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return ""
-    return text if report_is_complete(text) else ""
+    if not text:
+        return ""
+    return sanitize_report(text) if report_is_complete(text) else ""

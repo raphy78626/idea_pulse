@@ -377,3 +377,49 @@ def test_report_stage_does_not_retry_real_errors(monkeypatch, tmp_path):
     else:
         raise AssertionError("expected the error to propagate")
     assert calls["n"] == 1, "non-transient errors must not be retried"
+
+
+def test_sanitize_removes_tool_call_blocks():
+    md = "# R\n\nReal text.\n\n<tool_call>\n<thinking>hmm</thinking>\n</tool_call>\n\nMore real text.\n"
+    out = mirofish_bridge.sanitize_report(md)
+    assert "<tool_call>" not in out
+    assert "<thinking>" not in out
+    assert "Real text." in out
+    assert "More real text." in out
+
+
+def test_sanitize_removes_thinking_blocks():
+    md = "# R\n\nBefore.\n<thinking>internal monologue</thinking>\nAfter.\n"
+    out = mirofish_bridge.sanitize_report(md)
+    assert "internal monologue" not in out
+    assert "Before." in out and "After." in out
+
+
+def test_sanitize_removes_thought_paragraphs():
+    md = ("# R\n\n## Section\n\n"
+          "Thought: I have now used three tools. I will try quick_search next.\n\n"
+          "The actual finding is that buyers resent manual list building.\n")
+    out = mirofish_bridge.sanitize_report(md)
+    assert "Thought:" not in out
+    assert "three tools" not in out
+    assert "buyers resent manual list building" in out
+
+
+def test_sanitize_preserves_normal_markdown():
+    md = ("# Title\n\n> Quote line.\n\n## Section\n\n- bullet one\n- bullet two\n\n"
+          "| a | b |\n|---|---|\n| 1 | 2 |\n\nFinal sentence.\n")
+    assert mirofish_bridge.sanitize_report(md) == md
+
+
+def test_sanitize_handles_empty_and_none():
+    assert mirofish_bridge.sanitize_report("") == ""
+    assert mirofish_bridge.sanitize_report(None) == ""
+
+
+def test_read_report_sanitizes(tmp_path):
+    p = tmp_path / "r.md"
+    p.write_text("# R\n\nGood text.\n\n<tool_call>junk</tool_call>\n\n" + ("More text. " * 30),
+                 encoding="utf-8")
+    out = mirofish_bridge.read_report(str(p))
+    assert "<tool_call>" not in out
+    assert "Good text." in out
