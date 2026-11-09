@@ -276,3 +276,19 @@ def test_read_report_returns_empty_for_truncated(tmp_path):
 
 def test_read_report_returns_empty_for_none_path():
     assert mirofish_bridge.read_report(None) == ""
+
+
+def test_accepts_complete_chinese_report():
+    body = "# 报告\n\n" + ("这是一段足够长的正文内容。" * 20) + "最后一句也正常结束。"
+    assert mirofish_bridge.report_is_complete(body) is True
+
+
+def test_rejects_truncated_chinese_report():
+    body = "# 报告\n\n" + ("这是一段足够长的正文内容。" * 20) + "然后突然就断在"
+    assert mirofish_bridge.report_is_complete(body) is False
+
+
+def test_accepts_report_ending_in_other_cjk_punctuation():
+    for terminator in ("\u3002", "\uff01", "\uff1f", "\u201d", "\u300d"):
+        body = ("# Report\n\n" + ("A full sentence here. " * 20)).rstrip() + terminator
+        assert mirofish_bridge.report_is_complete(body) is True, terminator

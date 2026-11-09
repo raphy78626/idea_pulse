@@ -39,17 +39,20 @@ SIM_REQUIREMENT = (
     "being announced?"
 )
 
+# Sentence terminators across the languages MiroFish can emit reports in.
+_SENTENCE_END = re.compile(r"[.!?\"')\]\u3002\uff01\uff1f\u201d\u300d\u300f]\s*$")
+
 
 def report_is_complete(markdown):
     # type: (str) -> bool
-    """A MiroFish report is complete when it is substantial and ends a sentence.
+    """Language-independent completeness: substantial text ending a sentence.
 
     Deliberately separate from app._report_complete, which requires a
     '## Final call' heading that only deep-eval reports have.
     """
     if not markdown or len(markdown.strip()) < MIN_REPORT_CHARS:
         return False
-    return bool(re.search(r"[.!?\"')\]]\s*$", markdown.rstrip()))
+    return bool(_SENTENCE_END.search(markdown.rstrip()))
 
 
 def _clean(text, limit):
