@@ -1164,6 +1164,7 @@ def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
         report = (f' <a class="report" href="/report/{r["id"]}" target="_blank">📋 full report</a>'
                   if r["report_path"] else
                   f' <a class="report" href="#" onclick="deepeval({r["id"]}); return false;">🔬 deep evaluate</a>')
+        report += f' <a class="report" href="#" onclick="simulate({r["id"]}); return false;">🎭 Simulate</a>'
         report += f' <a class="report" href="#" onclick="explainIdea({r["id"]}); return false;">💬 explain</a>'
         report += f' <a class="report" href="#" onclick="pitchIdea({r["id"]}); return false;">📤 pitch</a>'
         if verdict in ("BUILD", "WATCH"):
@@ -1316,6 +1317,34 @@ async function deepeval(id){
     s.textContent = ok ? 'report saved — reloading' : ('failed — ' + (j.message || ''));
     s.style.color = ok ? '#a78bfa' : '#f87171';
     if (ok) setTimeout(() => location.reload(), 1500);
+  });
+}
+async function simulate(id){
+  const s = document.getElementById('status');
+  s.textContent = 'simulating reactions (~6-10 min)'; s.style.color = '#667781';
+  const r = await (await fetch('/simulate/' + id + '?async_=1')).json();
+  if (r.status === 'existing') {
+    s.textContent = 'report already exists - opening';
+    s.style.color = '#a78bfa';
+    location.href = '/simulation/' + id;
+    return;
+  }
+  if (!r.job) {
+    s.textContent = 'failed - ' + (r.error || 'could not start');
+    s.style.color = '#f87171';
+    return;
+  }
+  JobBar.watch(r.job, (j) => {
+    if (j.state === 'done') {
+      s.textContent = 'simulation saved - opening';
+      s.style.color = '#a78bfa';
+      location.href = '/simulation/' + id;
+    } else if (j.state === 'error') {
+      s.textContent = 'failed - ' + (j.message || '');
+      s.style.color = '#f87171';
+    } else {
+      s.textContent = j.label || 'simulating...';
+    }
   });
 }
 const DEMO_LINK = {{DEMO_LINK}};
