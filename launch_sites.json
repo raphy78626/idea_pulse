@@ -1,0 +1,637 @@
+[
+  {
+    "name": "Product Hunt",
+    "url": "https://www.producthunt.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 1,
+    "note": "The one launch that still moves. Needs a real product + 12h of reply time.",
+    "from_reel": true,
+    "reel_name": "Product Hunt"
+  },
+  {
+    "name": "Hacker News (Show HN)",
+    "url": "https://news.ycombinator.com/submit",
+    "category": "community",
+    "cost": "free",
+    "priority": 2,
+    "note": "Show HN: title must start 'Show HN:'. Best technical audience, harshest.",
+    "from_reel": true,
+    "reel_name": "Hacker News"
+  },
+  {
+    "name": "Indie Hackers",
+    "url": "https://www.indiehackers.com",
+    "category": "community",
+    "cost": "free",
+    "priority": 3,
+    "note": "Post revenue numbers / post-mortems, not announcements. Nofollow.",
+    "from_reel": true,
+    "reel_name": "Indie Hackers"
+  },
+  {
+    "name": "BetaList",
+    "url": "https://betalist.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 4,
+    "note": "Pre-launch only. Submit while still in beta; free tier can queue for weeks.",
+    "from_reel": true,
+    "reel_name": "BetaList"
+  },
+  {
+    "name": "Uneed",
+    "url": "https://www.uneed.best",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 5,
+    "note": "Daily hand-picked launches, DR ~60. Free slot, badge/paid for guaranteed dofollow.",
+    "from_reel": false
+  },
+  {
+    "name": "Peerlist",
+    "url": "https://peerlist.io",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 6,
+    "note": "Weekly project spotlight, DR 77. Launches Mon-Thu, needs a portfolio/profiles.",
+    "from_reel": false
+  },
+  {
+    "name": "Microlaunch",
+    "url": "https://microlaunch.net",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 7,
+    "note": "Monthly leaderboard, kinder to tiny products than PH.",
+    "from_reel": false
+  },
+  {
+    "name": "Fazier",
+    "url": "https://fazier.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 8,
+    "note": "Free launch board, dofollow on free tier.",
+    "from_reel": false
+  },
+  {
+    "name": "OpenHunts",
+    "url": "https://openhunts.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 9,
+    "note": "Product Hunt alternative, upvotes only.",
+    "from_reel": false
+  },
+  {
+    "name": "PitchWall",
+    "url": "https://pitchwall.co",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 10,
+    "note": "AI/maker wall. Good for AI tools, fast approval.",
+    "from_reel": false
+  },
+  {
+    "name": "BuildHop",
+    "url": "https://buildhop.io",
+    "category": "directory",
+    "cost": "free",
+    "priority": 11,
+    "note": "Ranks by time-on-page, not votes. Refuses products whose site won't load in an iframe.",
+    "from_reel": false
+  },
+  {
+    "name": "IndieHackerStacks",
+    "url": "https://indiehackerstacks.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 12,
+    "note": "Lists what you built with. Free + dofollow for life, DR ~30.",
+    "from_reel": false
+  },
+  {
+    "name": "Awesome Indie",
+    "url": "https://awesomeindie.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 13,
+    "note": "9k makers, but the queue is months long — submit early, forget it.",
+    "from_reel": false
+  },
+  {
+    "name": "AlternativeTo",
+    "url": "https://alternativeto.net",
+    "category": "directory",
+    "cost": "free",
+    "priority": 14,
+    "note": "Traffic gold if you are 'an alternative to X'. Add yourself as an alternative to 3 incumbents.",
+    "from_reel": true,
+    "reel_name": "AlternativeTo"
+  },
+  {
+    "name": "SaaSHub",
+    "url": "https://www.saashub.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 15,
+    "note": "Free listing + a free 110-directory submission checklist once approved.",
+    "from_reel": true,
+    "reel_name": "SaaSHub"
+  },
+  {
+    "name": "SourceForge",
+    "url": "https://sourceforge.net",
+    "category": "directory",
+    "cost": "free",
+    "priority": 16,
+    "note": "Only worth it for open-source / self-hostable products. DR 92.",
+    "from_reel": true,
+    "reel_name": "SourceForge"
+  },
+  {
+    "name": "SideProjectors",
+    "url": "https://www.sideprojectors.com",
+    "category": "marketplace",
+    "cost": "free",
+    "priority": 17,
+    "note": "Showcase + buy/sell side projects. Some buyers come looking here.",
+    "from_reel": true,
+    "reel_name": "SideProjectors"
+  },
+  {
+    "name": "ScrollLaunch",
+    "url": "https://www.scrolllaunch.com",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 18,
+    "note": "Weekly board, 25 free slots/week. Free backlink only while their badge is on your site.",
+    "from_reel": true,
+    "reel_name": "ScrollLaunch"
+  },
+  {
+    "name": "TinyLaunch",
+    "url": "https://tinylaun.ch",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 19,
+    "note": "Monday launches, ~4 week free queue. Dofollow only for top 3 + badge.",
+    "from_reel": true,
+    "reel_name": "TinyLaunch"
+  },
+  {
+    "name": "Smol Launch",
+    "url": "https://smollaunch.com",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 20,
+    "note": "First launch free, 50 shared slots/week, needs 3 votes on other launches.",
+    "from_reel": true,
+    "reel_name": "Smol Launch"
+  },
+  {
+    "name": "MakerHunt",
+    "url": "https://makerhunt.io",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 21,
+    "note": "Weekly Monday 8am UTC hunt. Free = badge + nofollow; $29 = dofollow.",
+    "from_reel": true,
+    "reel_name": "MakerHunt"
+  },
+  {
+    "name": "Sidehunt",
+    "url": "https://sidehunt.io",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 22,
+    "note": "Weekly indie hunt, 400-word floor, calendar booked months out.",
+    "from_reel": true,
+    "reel_name": "Sidehunt"
+  },
+  {
+    "name": "IndieHunt",
+    "url": "https://indiehunt.io",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 23,
+    "note": "15 free slots/week, badge required, top-3 free can earn dofollow.",
+    "from_reel": true,
+    "reel_name": "IndieHunt"
+  },
+  {
+    "name": "Startup Fast",
+    "url": "https://www.startupfa.st",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 24,
+    "note": "5 free slots/day, up to 90 days wait. Dofollow only for daily top 3 + badge.",
+    "from_reel": true,
+    "reel_name": "Startup Fast"
+  },
+  {
+    "name": "Firsto",
+    "url": "https://firsto.co",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 25,
+    "note": "Fair-launch board — every launch actually gets seen.",
+    "from_reel": true,
+    "reel_name": "Firsto"
+  },
+  {
+    "name": "DailyPings",
+    "url": "https://dailypings.com",
+    "category": "launch board",
+    "cost": "free+",
+    "priority": 26,
+    "note": "Instant listing, no queue. Badge re-checked daily — remove it and you're delisted.",
+    "from_reel": true,
+    "reel_name": "DailyPings"
+  },
+  {
+    "name": "ProductBurst",
+    "url": "https://productburst.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 27,
+    "note": "Monday batches, homepage for 30 days, no approval step.",
+    "from_reel": true,
+    "reel_name": "ProductBurst"
+  },
+  {
+    "name": "TryLaunch",
+    "url": "https://trylaunch.ai",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 28,
+    "note": "Free = standard queue; $39 Pro picks your date + newsletter.",
+    "from_reel": true,
+    "reel_name": "TryLaunch"
+  },
+  {
+    "name": "LaunchIgniter",
+    "url": "https://launchigniter.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 29,
+    "note": "Small but real vote board, quick approval.",
+    "from_reel": true,
+    "reel_name": "LaunchIgniter"
+  },
+  {
+    "name": "EarlyHunt",
+    "url": "https://earlyhunt.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 30,
+    "note": "Weekly AI hunts for people who want to be early testers.",
+    "from_reel": true,
+    "reel_name": "EarlyHunt"
+  },
+  {
+    "name": "Launching Next",
+    "url": "https://www.launchingnext.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 31,
+    "note": "Old-school startup directory, free listing, steady trickle.",
+    "from_reel": true,
+    "reel_name": "Launching Next"
+  },
+  {
+    "name": "Startup Stash",
+    "url": "https://startupstash.com",
+    "category": "directory",
+    "cost": "paid",
+    "priority": 32,
+    "note": "Curated tool directory — historically paid to list, ask first.",
+    "from_reel": true,
+    "reel_name": "Startup Stash"
+  },
+  {
+    "name": "Startup Buffer",
+    "url": "https://startupbuffer.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 33,
+    "note": "Newsletter + directory for new products, free submission.",
+    "from_reel": true,
+    "reel_name": "Startup Buffer"
+  },
+  {
+    "name": "StartupBlink",
+    "url": "https://www.startupblink.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 34,
+    "note": "Ecosystem map — also gets you listed as an Indian startup, useful locally.",
+    "from_reel": true,
+    "reel_name": "StartupBlink"
+  },
+  {
+    "name": "ShowBuild",
+    "url": "https://showbuild.co",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 35,
+    "note": "Hacker News for builders — small, friendly, good feedback.",
+    "from_reel": true,
+    "reel_name": "ShowBuild"
+  },
+  {
+    "name": "BetterLaunch",
+    "url": "https://betterlaunch.co",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 36,
+    "note": "Free posting, discovery-focused.",
+    "from_reel": true,
+    "reel_name": "BetterLaunch"
+  },
+  {
+    "name": "Huzzler",
+    "url": "https://huzzler.so",
+    "category": "directory",
+    "cost": "free+",
+    "priority": 37,
+    "note": "Free = ~72 day queue, no Google indexing. $29 = live today, DR 70+ dofollow.",
+    "from_reel": true,
+    "reel_name": "Huzzler"
+  },
+  {
+    "name": "BuildVoyage",
+    "url": "https://buildvoyage.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 38,
+    "note": "Curated micro-SaaS directory.",
+    "from_reel": true,
+    "reel_name": "BuildVoyage"
+  },
+  {
+    "name": "Promote Project",
+    "url": "https://www.promoteproject.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 39,
+    "note": "Startup articles + listings, free submit.",
+    "from_reel": true,
+    "reel_name": "Promote Project"
+  },
+  {
+    "name": "Find Your SaaS",
+    "url": "https://findyoursaas.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 40,
+    "note": "SaaS discovery list.",
+    "from_reel": true,
+    "reel_name": "Find Your SaaS"
+  },
+  {
+    "name": "SaaSHunt",
+    "url": "https://saashunt.io",
+    "category": "directory",
+    "cost": "free",
+    "priority": 41,
+    "note": "SaaS directory with voting.",
+    "from_reel": true,
+    "reel_name": "SaaSHunt"
+  },
+  {
+    "name": "Idea Kiln",
+    "url": "https://ideakiln.com",
+    "category": "launch board",
+    "cost": "free",
+    "priority": 42,
+    "note": "'Ship it forward' — feedback-first board.",
+    "from_reel": true,
+    "reel_name": "Idea Kiln"
+  },
+  {
+    "name": "FindAlternate",
+    "url": "https://findalternate.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 43,
+    "note": "Alternatives directory built for Google + AI answers.",
+    "from_reel": true,
+    "reel_name": "FindAlternate"
+  },
+  {
+    "name": "Alterm",
+    "url": "https://alterm.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 44,
+    "note": "Software alternatives directory — list as alternative to incumbents.",
+    "from_reel": true,
+    "reel_name": "Alterm"
+  },
+  {
+    "name": "EuroAlternative",
+    "url": "https://euroalternative.eu",
+    "category": "directory",
+    "cost": "free",
+    "priority": 45,
+    "note": "Only if you have an EU/UK company + EU hosting. Otherwise skip.",
+    "from_reel": true,
+    "reel_name": "EuroAlternative"
+  },
+  {
+    "name": "Extension Launch",
+    "url": "https://extensionlaunch.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 46,
+    "note": "Chrome/extension products only — perfect if you ship an extension.",
+    "from_reel": true,
+    "reel_name": "Extension Launch"
+  },
+  {
+    "name": "Show Me Best AI",
+    "url": "https://showmebest.ai",
+    "category": "ai directory",
+    "cost": "free",
+    "priority": 47,
+    "note": "AI tool list, free submit.",
+    "from_reel": true,
+    "reel_name": "Show Me Best AI"
+  },
+  {
+    "name": "Future Tools",
+    "url": "https://www.futuretools.io",
+    "category": "ai directory",
+    "cost": "paid",
+    "priority": 48,
+    "note": "Matt Wolfe's list — submission is paid, big AI audience.",
+    "from_reel": true,
+    "reel_name": "Future Tools"
+  },
+  {
+    "name": "Toolify",
+    "url": "https://www.toolify.ai",
+    "category": "ai directory",
+    "cost": "free+",
+    "priority": 49,
+    "note": "Largest AI tool directory. Free listing queue, paid for featured.",
+    "from_reel": true,
+    "reel_name": "Toolify"
+  },
+  {
+    "name": "AI Valley",
+    "url": "https://aivalley.ai",
+    "category": "ai directory",
+    "cost": "free",
+    "priority": 50,
+    "note": "Newsletter + directory, free submit.",
+    "from_reel": true,
+    "reel_name": "AI Valley"
+  },
+  {
+    "name": "AI Tools Club",
+    "url": "https://www.aitoolsclub.com",
+    "category": "ai directory",
+    "cost": "free",
+    "priority": 51,
+    "note": "AI directory, reviews included.",
+    "from_reel": true,
+    "reel_name": "AI Tools Club"
+  },
+  {
+    "name": "Aura++",
+    "url": "https://auraplusplus.com",
+    "category": "ai directory",
+    "cost": "free",
+    "priority": 52,
+    "note": "AI tool wall.",
+    "from_reel": true,
+    "reel_name": "Aura++"
+  },
+  {
+    "name": "AI for Developers",
+    "url": "https://aifordevelopers.io",
+    "category": "ai directory",
+    "cost": "free",
+    "priority": 53,
+    "note": "Dev-tool focused AI list.",
+    "from_reel": true,
+    "reel_name": "AI for Developers"
+  },
+  {
+    "name": "Dev Resources",
+    "url": "https://devresourc.es",
+    "category": "dev directory",
+    "cost": "free",
+    "priority": 54,
+    "note": "800+ dev resources, PR on GitHub or form submit.",
+    "from_reel": true,
+    "reel_name": "Dev Resources"
+  },
+  {
+    "name": "Micro SaaS Examples",
+    "url": "https://microsaasexamples.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 55,
+    "note": "500+ micro-SaaS ideas & examples — good for research too.",
+    "from_reel": true,
+    "reel_name": "Micro SaaS Examples"
+  },
+  {
+    "name": "G2",
+    "url": "https://www.g2.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 56,
+    "note": "Free profile, but competing in software categories. Needs real customers for reviews.",
+    "from_reel": true,
+    "reel_name": "G2"
+  },
+  {
+    "name": "Capterra",
+    "url": "https://www.capterra.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 57,
+    "note": "Gartner-owned, free listing, strong B2B search traffic.",
+    "from_reel": true,
+    "reel_name": "Capterra"
+  },
+  {
+    "name": "GetApp",
+    "url": "https://www.getapp.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 58,
+    "note": "Same family as Capterra — one submission usually covers both.",
+    "from_reel": true,
+    "reel_name": "GetApp"
+  },
+  {
+    "name": "SoftwareSuggest",
+    "url": "https://www.softwaresuggest.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 59,
+    "note": "India-focused B2B software discovery — good for INR pricing.",
+    "from_reel": false
+  },
+  {
+    "name": "Crozdesk",
+    "url": "https://crozdesk.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 60,
+    "note": "Business software discovery + lead gen.",
+    "from_reel": false
+  },
+  {
+    "name": "TrustRadius",
+    "url": "https://www.trustradius.com",
+    "category": "review site",
+    "cost": "free",
+    "priority": 61,
+    "note": "B2B reviews; slow but high-intent buyers.",
+    "from_reel": false
+  },
+  {
+    "name": "Crunchbase",
+    "url": "https://www.crunchbase.com",
+    "category": "directory",
+    "cost": "free",
+    "priority": 62,
+    "note": "Company profile. Free tier is limited; useful for credibility, not traffic.",
+    "from_reel": true,
+    "reel_name": "Crunchbase"
+  },
+  {
+    "name": "Reddit r/SideProject",
+    "url": "https://www.reddit.com/r/SideProject",
+    "category": "community",
+    "cost": "free",
+    "priority": 63,
+    "note": "Read the rules; feedback posts work better than promo posts.",
+    "from_reel": false
+  },
+  {
+    "name": "Lobsters",
+    "url": "https://lobste.rs",
+    "category": "community",
+    "cost": "free",
+    "priority": 64,
+    "note": "Invite-only for submissions — needs a vouch. Technical audience.",
+    "from_reel": false
+  },
+  {
+    "name": "StackShare",
+    "url": "https://stackshare.io",
+    "category": "dev directory",
+    "cost": "free",
+    "priority": 65,
+    "note": "Tool profile + stack listings.",
+    "from_reel": false
+  }
+]

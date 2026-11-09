@@ -1,0 +1,12 @@
+{
+  "name": "Lobsters (dev community)",
+  "type": "json",
+  "url": "https://lobste.rs/hottest.json",
+  "items_path": "",
+  "fields": {
+    "title": "title",
+    "url": "comments_path",
+    "meta": "score",
+    "meta_template": "{meta} pts · tags: {tags}"
+  }
+}

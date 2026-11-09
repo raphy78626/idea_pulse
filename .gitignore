@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# runtime data and generated state
+ideas.db
+ideas.db.bak-*
+.free_models.json
+
+# local tooling state
+.cursor/

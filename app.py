@@ -1,0 +1,1319 @@
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import html
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+BASE = Path(__file__).parent
+DB = BASE / "ideas.db"
+UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) IdeaPulse/1.0"}
+
+HOT_WORDS = ("ai", "agent", "saas", "bot", "automation", "tool", "app", "mcp",
+             "whatsapp", "chrome extension", "micro", "n8n", "workflow", "voice")
+
+SUBREDDITS = ["SomebodyMakeThis", "AppIdeas", "Startup_Ideas", "Business_Ideas",
+              "CrazyIdeas", "SaaS", "EntrepreneurRideAlong", "indiehackers"]
+
+
+def db():
+    conn = sqlite3.connect(DB)
+    conn.execute("""CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fetched_on TEXT, source TEXT, title TEXT, url TEXT UNIQUE,
+        meta TEXT, score INTEGER, kind TEXT, eng INTEGER DEFAULT 0)""")
+    for col in ("eng INTEGER DEFAULT 0", "verdict TEXT", "buildability INTEGER",
+                "ttm_days INTEGER", "what TEXT", "reason TEXT", "report_path TEXT", "nutshell TEXT",
+                "pitch TEXT", "capital INTEGER", "first_payment TEXT", "earn_verdict TEXT",
+                "proof TEXT", "buyer TEXT", "offer_money TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col}")
+        except Exception:
+            pass
+    return conn
+
+
+def engagement(meta):
+    m = re.search(r"(\d[\d,]*)", meta or "")
+    return int(m.group(1).replace(",", "")) if m else 0
+
+
+def save_items(source, items):
+    conn = db()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    n = 0
+    for title, url, meta, kind in items:
+        score = sum(2 for w in HOT_WORDS if w in title.lower())
+        cur = conn.execute("INSERT OR IGNORE INTO items (fetched_on, source, title, url, meta, score, kind, eng)"
+                           " VALUES (?,?,?,?,?,?,?,?)",
+                           (now, source, title, url, meta, score, kind, engagement(meta)))
+        n += max(0, cur.rowcount)
+    conn.commit()
+    conn.close()
+    return n
+
+
+def fetch_hn(client):
+    r = client.get("https://hn.algolia.com/api/v1/search_by_date?tags=show_hn&hitsPerPage=40&numericFilters=points%3E5")
+    items = []
+    for h in r.json().get("hits", []):
+        title = h.get("title") or ""
+        url = h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}"
+        items.append((title, url, f"{h.get('points', 0)} pts · {h.get('num_comments', 0)} comments", "show_hn"))
+    return items[:25]
+
+
+def fetch_github(client):
+    r = client.get("https://github.com/trending?since=daily")
+    html = r.text
+    items = []
+    blocks = re.findall(r'<h2 class="h3 lh-condensed">.*?href="/([^"]+)"', html, re.S)
+    descs = re.findall(r'<p class="col-9[^"]*">\s*(.*?)\s*</p>', html, re.S)
+    stars = re.findall(r'href="/([^/]+/[^/]+)/stargazers.*?\s*([\d,]+)\s*</a>', html, re.S)
+    for i, repo in enumerate(blocks[:20]):
+        repo = repo.strip()
+        desc = re.sub(r"<[^>]+>", "", descs[i]).strip() if i < len(descs) else ""
+        st = stars[i][1].replace(",", "") if i < len(stars) else "?"
+        items.append((f"{repo}: {desc}"[:160], f"https://github.com/{repo}", f"★ {st} today", "repo"))
+    return items
+
+
+def fetch_reddit(client):
+    items = []
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
+    for sub in SUBREDDITS:
+        for host in ("https://www.reddit.com", "https://old.reddit.com"):
+            try:
+                r = client.get(f"{host}/r/{sub}/top.json?t=day&limit=10", headers=headers, timeout=10)
+                if r.status_code != 200:
+                    continue
+                for c in r.json().get("data", {}).get("children", []):
+                    d = c["data"]
+                    items.append((d["title"], f"https://reddit.com{d['permalink']}",
+                                  f"r/{sub} · {d['score']} ↑ · {d['num_comments']} comments", "post"))
+                break
+            except Exception:
+                continue
+    return items
+
+
+def fetch_ph(client):
+    """Product Hunt serves Atom (<entry>), not RSS (<item>) — parsing <item> always gave 0."""
+    try:
+        r = client.get("https://www.producthunt.com/feed", timeout=15)
+        out = []
+        for block in re.findall(r"<entry>(.*?)</entry>", r.text, re.S)[:20]:
+            t = re.search(r"<title[^>]*>(.*?)</title>", block, re.S)
+            l = re.search(r'<link[^>]+href="([^"]+)"', block)
+            if not t:
+                continue
+            name = re.sub(r"<[^>]+>", "", t.group(1)).strip()
+            url = (l.group(1).strip() if l else "https://producthunt.com").split("?")[0]
+            if not name or not url.startswith("http"):
+                continue
+            # the tagline is the first <p> inside the (escaped) content block
+            tagline = ""
+            c = re.search(r"<content[^>]*>(.*?)</content>", block, re.S)
+            if c:
+                fp = re.search(r"<p>(.*?)</p>", html.unescape(c.group(1)), re.S)
+                if fp:
+                    tagline = re.sub(r"<[^>]+>", " ", fp.group(1))
+                    tagline = re.sub(r"\s+", " ", tagline).strip()[:180]
+            out.append((name[:150], url, tagline or "Product Hunt launch", "launch"))
+        return out
+    except Exception:
+        return []
+
+
+def fetch_askhn(client):
+    r = client.get("https://hn.algolia.com/api/v1/search_by_date?tags=ask_hn&hitsPerPage=30&numericFilters=points%3E8")
+    items = []
+    for h in r.json().get("hits", []):
+        title = h.get("title") or ""
+        if not any(k in title.lower() for k in ("idea", "build", "saas", "side project", "who ", "anyone", "worth")):
+            continue
+        url = f"https://news.ycombinator.com/item?id={h['objectID']}"
+        items.append((title, url, f"{h.get('points', 0)} pts · {h.get('num_comments', 0)} comments", "ask_hn"))
+    return items[:12]
+
+
+def fetch_devto(client):
+    r = client.get("https://dev.to/api/articles?top=1&per_page=15")
+    items = []
+    for a in r.json():
+        tags = a.get("tag_list") or []
+        tags = [t if isinstance(t, str) else t.get("name", "") for t in tags][:3]
+        items.append((f"{a['title']} (#{', '.join(tags)})",
+                      a["url"], f"dev.to · {a.get('positive_reactions_count', 0)} ♥", "article"))
+    return items[:12]
+
+
+def fetch_gtrends(client):
+    r = client.get("https://trends.google.com/trending/rss?geo=IN", timeout=10)
+    items = []
+    for block in re.findall(r"<item>(.*?)</item>", r.text, re.S)[:15]:
+        t = re.search(r"<title>(.*?)</title>", block, re.S)
+        approx = re.search(r"<ht:approx_traffic>(.*?)</ht:approx_traffic>", block, re.S)
+        n = re.search(r"<news_item_title>(.*?)</news_item_title>", block, re.S)
+        if not t:
+            continue
+        title = f"INDIA searching: {t.group(1).strip()}"
+        if n:
+            title += f" — {n.group(1)[:80]}"
+        url = f"https://trends.google.com/trends/explore?q={t.group(1).strip().replace(' ', '+')}"
+        items.append((title[:180], url, f"🔍 {approx.group(1) if approx else '?'} searches", "trend"))
+    return items
+
+
+def _dig(d, path):
+    if not path:
+        return d
+    cur = d
+    for part in path.split("."):
+        if isinstance(cur, list):
+            cur = cur[int(part)]
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
+def fetch_declarative(client, cfg):
+    r = client.get(cfg["url"], timeout=15)
+    if cfg.get("type") == "json":
+        data = r.json()
+        rows = _dig(data, cfg.get("items_path", "")) or []
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        f = cfg.get("fields", {})
+        out = []
+        for row in rows:
+            title = str(_dig(row, f.get("title", "title")) or "")[:160]
+            url = str(_dig(row, f.get("url", "url")) or "")
+            if url.startswith("/"):
+                from urllib.parse import urljoin
+                url = urljoin(cfg["url"], url)
+            meta_raw = str(_dig(row, f.get("meta", "score")) or "?")
+            meta = f.get("meta_template", "{meta}").replace("{meta}", meta_raw)
+            if title and url.startswith("http"):
+                out.append((title, url, meta[:90], "custom"))
+        return out
+    html = r.text
+    out = []
+    for m in re.finditer(cfg.get("item_regex", ""), html, re.S):
+        g = m.groups()
+        out.append((re.sub(r"<[^>]+>", "", g[0])[:160], g[1], (g[2] if len(g) > 2 else "")[:90], "custom"))
+    return out
+
+
+def fetch_apify_actor(client, cfg_actor, token):
+    r = client.get(f"https://api.apify.com/v2/acts/{cfg_actor['actor']}/runs/last/dataset/items",
+                   params={"token": token, "limit": cfg_actor.get("max_items", 20), "clean": "true"}, timeout=30)
+    if r.status_code == 404:
+        return [], "no runs yet (run the actor once in Apify console)"
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    f = cfg_actor.get("fields", {})
+    out = []
+    for row in r.json():
+        title = str(_dig(row, f.get("title", "title")) or "")[:160]
+        url = str(_dig(row, f.get("url", "url")) or "")
+        url = url.format(**{k: str(v) for k, v in row.items()}) if "{" in url else url
+        meta_raw = str(_dig(row, f.get("meta", "score")) or "?")
+        meta = f.get("meta_template", "{meta}").replace("{meta}", meta_raw)
+        if title and url:
+            out.append((title, url, meta[:90], "apify"))
+    return out, "ok"
+
+
+def discover_sources():
+    """built-ins + sources/*.py + sources/*.json + launch-directory scrapers"""
+    srcs = [("HN Show HN", fetch_hn), ("Ask HN ideas", fetch_askhn), ("GitHub Trending", fetch_github),
+            ("Reddit", fetch_reddit), ("Product Hunt", fetch_ph), ("dev.to", fetch_devto),
+            ("Google Trends IN", fetch_gtrends)]
+    # launch directories that expose real product data (see launch_scrape.py)
+    try:
+        import launch_scrape
+        for name, fn in launch_scrape.ADAPTERS.items():
+            srcs.append((name, fn))
+    except Exception:
+        pass
+    # business / side-hustle lanes — the "first currency" question (business_scrape.py)
+    try:
+        import business_scrape
+        for name, fn in business_scrape.ADAPTERS.items():
+            srcs.append((name, fn))
+    except Exception:
+        pass
+    sdir = BASE / "sources"
+    if sdir.exists():
+        import importlib.util
+        for pyf in sorted(sdir.glob("*.py")):
+            try:
+                spec = importlib.util.spec_from_file_location(pyf.stem, pyf)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                srcs.append((f"{pyf.stem} (custom)", mod.fetch))
+            except Exception:
+                pass
+        for jsf in sorted(sdir.glob("*.json")):
+            try:
+                cfg = json.loads(jsf.read_text())
+                srcs.append((cfg.get("name", jsf.stem), (lambda c: (lambda client: fetch_declarative(client, c)))(cfg)))
+            except Exception:
+                pass
+    return srcs
+
+
+def _status():
+    conn = db()
+    conn.execute("""CREATE TABLE IF NOT EXISTS source_status (
+        source TEXT PRIMARY KEY, last_run TEXT, status TEXT, count INTEGER)""")
+    conn.commit(); conn.close()
+
+def set_status(source, status, count):
+    conn = db(); _status()
+    conn.execute("INSERT OR REPLACE INTO source_status VALUES (?,?,?,?)",
+                 (source, datetime.now().strftime("%H:%M"), status, count))
+    conn.commit(); conn.close()
+
+def get_statuses():
+    try:
+        conn = db(); conn.row_factory = sqlite3.Row; _status()
+        rows = [dict(r) for r in conn.execute("SELECT * FROM source_status ORDER BY source").fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def fetch_all():
+    total = 0
+    report = []
+    with httpx.Client(headers=UA, timeout=15, follow_redirects=True) as client:
+        for name, fn in discover_sources():
+            try:
+                n = save_items(name, fn(client))
+                set_status(name, "ok", n)
+                report.append(f"{name}: +{n}")
+                total += n
+            except Exception as e:
+                set_status(name, f"FAILED {type(e).__name__}", 0)
+                report.append(f"{name}: FAILED ({type(e).__name__})")
+        # apify actors (token optional)
+        try:
+            cfg = json.loads((BASE / "sources_config.json").read_text())
+            apify = cfg.get("apify", {})
+            token = os.environ.get(apify.get("token_env", "APIFY_TOKEN"), "")
+            for actor_cfg in apify.get("actors", []):
+                name = actor_cfg.get("name", actor_cfg["actor"])
+                if not token:
+                    set_status(name, "skipped: set APIFY_TOKEN", 0)
+                    continue
+                try:
+                    items, st = fetch_apify_actor(client, actor_cfg, token)
+                    n = save_items(name, items)
+                    set_status(name, f"ok ({st})", n)
+                    report.append(f"{name}: +{n}")
+                    total += n
+                except Exception as e:
+                    set_status(name, f"FAILED {type(e).__name__}", 0)
+                    report.append(f"{name}: FAILED")
+        except Exception:
+            pass
+    return total, report
+
+
+EVAL_SYSTEM = ("You are a ruthless startup evaluator for a solo developer in India building "
+               "micro-products for fast cash (first rupee within weeks). Judge ONLY what is "
+               "stated. Reply with ONLY compact JSON, no markdown fences, keys: "
+               '{"verdict":"BUILD|WATCH|SKIP","buildability":1-10,"ttm_days":number,'
+               '"what":"one line: exactly what to build","reason":"one line why"}. '
+               "BUILD = solo-buildable in <=1 week, clear buyer, fast first rupee. "
+               "WATCH = interesting but distribution or demand unclear. "
+               "SKIP = toy, needs scale/network effects, regulated, or hardware-heavy.")
+
+
+# The "first currency" rubric. Different question from EVAL_SYSTEM:
+# that one asks "is this a good product?"; this one asks "can this specific
+# person get paid soon, and what is the shortest honest path to it?"
+MONEY_SYSTEM = (
+    "You evaluate opportunities for ONE specific person: a software engineer in India "
+    "(Java/Spring, FastAPI, Python, WhatsApp bots, AI/LLM integration, some frontend) "
+    "who wants to earn their FIRST rupee/dollar as fast as possible, working alone, "
+    "part-time, with almost no capital.\n\n"
+    "The input may be a product idea, a business model, a service offer, someone's "
+    "report of what worked for them, or a complaint that reveals demand. Treat all of "
+    "them the same: what could this person SELL, to WHOM, for HOW MUCH, and how fast?\n\n"
+    "Be brutally practical. A boring service that can be sold this week beats a clever "
+    "product that needs an audience. Judge only what the input supports; if a number is "
+    "invented, say so in the reason.\n\n"
+    "Reply with ONLY compact JSON, no markdown fences:\n"
+    '{"earn_verdict":"GO|LATER|NO",'
+    '"what":"what exactly to sell, in one line, concrete enough to write an offer",'
+    '"buyer":"who pays, named as specifically as possible (role, business type, where to find them)",'
+    '"offer":"the exact first offer and price in INR and USD",'
+    '"first_payment":"realistic days to first paid rupee, integer",'
+    '"capital":dollars needed to start, integer, 0 if none,'
+    '"proof":"does the input contain evidence this already earns money? yes|partial|no",'
+    '"reason":"one line: why this is or is not a fast first rupee for this person"}\n\n'
+    "GO = a stranger could plausibly pay within 14 days. "
+    "LATER = real money but needs an audience, credentials, or stock first. "
+    "NO = too slow, too regulated, needs a team, or the input is just chat with no offer.")
+
+
+def _money_call(title, meta, source=""):
+    """First-currency evaluation. Returns (dict, model)."""
+    prompt = (f"Opportunity: {title}\nSource: {source}\nContext: {meta}\n\n"
+              "What could this person sell, to whom, for how much, and how fast?")
+    txt, model = _or_chat(MONEY_SYSTEM, prompt, max_tokens=4000, timeout=120, want_json=True)
+    d = parse_json(txt)
+    if not d:
+        return {"earn_verdict": "ERROR", "what": "", "buyer": "", "offer": "",
+                "first_payment": 0, "capital": 0, "proof": "",
+                "reason": f"eval failed: {model}"}, model
+    v = str(d.get("earn_verdict", "LATER")).upper().strip()
+    if v not in ("GO", "LATER", "NO"):
+        v = "LATER"
+    days = _int(d.get("first_payment"))
+    # a NO verdict has no payment horizon; a bogus 999 skews "quickest money" sorting
+    if v == "NO" or days > 365:
+        days = 0
+    what = str(d.get("what") or "")[:220]
+    proof = str(d.get("proof") or "")[:20].lower()
+
+    # Consistency guard: a GO must name something sellable. Models occasionally
+    # reply GO while writing "no concrete service identified" — that is a LATER
+    # at best, and left alone it puts dead rows at the top of the board.
+    vague = (not what.strip()
+             or what.lower().startswith("no concrete")
+             or what.lower().startswith("nothing")
+             or "not a paid opportunity" in what.lower())
+    if v == "GO" and vague:
+        v = "LATER"
+        if not d.get("reason"):
+            d["reason"] = "no concrete offer could be named — not a first-currency path yet"
+    # GO with zero proof and no stated price is a guess, not a lead
+    if v == "GO" and proof == "no" and not str(d.get("offer") or "").strip():
+        v = "LATER"
+
+    return {
+        "earn_verdict": v,
+        "what": what,
+        "buyer": str(d.get("buyer") or "")[:220],
+        "offer": str(d.get("offer") or "")[:220],
+        "first_payment": days,
+        "capital": _int(d.get("capital")),
+        "proof": proof,
+        "reason": str(d.get("reason") or "")[:220],
+    }, model
+
+
+def evaluate_money(limit=20, sources=None):
+    """Evaluate opportunities for the first-currency question."""
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    where = "(earn_verdict IS NULL OR earn_verdict='ERROR')"
+    params = []
+    if sources:
+        marks = ",".join("?" * len(sources))
+        where += f" AND source IN ({marks})"
+        params.extend(sources)
+    rows = conn.execute(f"""SELECT id, title, meta, source FROM items
+        WHERE {where} ORDER BY verdict IS NULL, score DESC, eng DESC LIMIT ?""",
+        params + [limit]).fetchall()
+    conn.close()
+    used = {}
+    for r in rows:
+        d, model = _money_call(r["title"], r["meta"], r["source"])
+        used[model] = used.get(model, 0) + 1
+        c = db()
+        c.execute("""UPDATE items SET earn_verdict=?, what=COALESCE(NULLIF(what,''), ?),
+                     reason=?, first_payment=?, capital=?, proof=?, buyer=?, offer_money=? WHERE id=?""",
+                  (d["earn_verdict"], d["what"], d["reason"], d["first_payment"],
+                   d["capital"], d.get("proof", ""), d.get("buyer", ""),
+                   d.get("offer", ""), r["id"]))
+        c.commit(); c.close()
+        time.sleep(0.6)
+    return len(rows), used
+
+
+from llm import chat as _llm_chat, parse_json
+
+
+def _or_chat(system, user, max_tokens=3000, timeout=90, want_json=False):
+    return _llm_chat(system, user, max_tokens=max_tokens, timeout=timeout, want_json=want_json)
+
+
+def _int(v):
+    m = re.search(r"\d+", str(v or ""))
+    return int(m.group(0)) if m else 0
+
+
+def _eval_call(title, meta):
+    txt, model = _or_chat(EVAL_SYSTEM, f"Idea: {title}\nContext: {meta}",
+                          max_tokens=3000, want_json=True)
+    d = parse_json(txt)
+    if not d:
+        # ERROR (not SKIP) so a dead model never buries an idea; it is retried next run
+        return {"verdict": "ERROR", "buildability": 0, "ttm_days": 0,
+                "what": "", "reason": f"eval failed: {model}"}, "none"
+    d["verdict"] = str(d.get("verdict", "WATCH")).upper().strip()
+    if d["verdict"] not in ("BUILD", "WATCH", "SKIP"):
+        d["verdict"] = "WATCH"
+    d["buildability"] = min(10, _int(d.get("buildability")))
+    d["ttm_days"] = _int(d.get("ttm_days"))
+    d["what"] = str(d.get("what") or "")
+    d["reason"] = str(d.get("reason") or "")
+    return d, model
+
+
+def evaluate_items(limit=25):
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""SELECT id, title, meta FROM items
+        WHERE verdict IS NULL OR verdict='ERROR'
+        ORDER BY verdict IS NOT NULL, score DESC, eng DESC LIMIT ?""", (limit,)).fetchall()
+    conn.close()
+    used = {}
+    for r in rows:
+        d, model = _eval_call(r["title"], r["meta"])
+        used[model] = used.get(model, 0) + 1
+        conn = db()
+        conn.execute("""UPDATE items SET verdict=?, buildability=?, ttm_days=?, what=?, reason=?
+                        WHERE id=?""",
+                     (d["verdict"], d["buildability"], d["ttm_days"],
+                      d.get("what", "")[:200], d.get("reason", "")[:200], r["id"]))
+        conn.commit(); conn.close()
+        time.sleep(0.8)
+    return len(rows), used
+
+
+DEEP_SYSTEM = ("You are a senior startup evaluator running a full workup for a solo dev in India "
+               "(fast cash, micro-product). Be concrete and ruthless. Markdown output with these "
+               "sections: ## Verdict (BUILD/WATCH/SKIP + score /10 + one-line)\n"
+               "## Pain & evidence\n## Target buyer (who pays, where they hang out)\n"
+               "## Competition & wedge (3 alternatives + how this differs)\n"
+               "## Monetization (pricing in INR + USD, expected first-month revenue range)\n"
+               "## Distribution (exact 3 channels)\n## Risks & kill-criteria\n"
+               "## 7-day MVP plan (day-by-day)\n## Final call (2 sentences).\n"
+               "Keep tables to at most 4 columns with short cells. Write for a reader new to "
+               "the topic: plain words, no unexplained acronyms. Total under 900 words so the "
+               "Final call section is always reached.")
+
+
+def deep_eval(item_id, force=False):
+    conn = db(); conn.row_factory = sqlite3.Row
+def deep_eval(item_id, force=False, progress=None):
+    """Full workup. progress(step, label) is called at each real phase so a UI can show progress."""
+    say = progress or (lambda step, label: None)
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None, "item not found"
+    if row["report_path"] and not force and Path(row["report_path"]).exists():
+        if _report_complete(Path(row["report_path"]).read_text()):
+            say(2, "report already exists")
+            return row["report_path"], "existing"
+    prompt = f"Idea: {row['title']}\nContext: {row['meta']}\nSource: {row['source']}"
+    txt, used_model = "", ""
+    # hidden reasoning shares max_tokens on free models, so budget big and retry once if cut short
+    for attempt in range(2):
+        say(attempt, f"model writing the report (attempt {attempt + 1} of 2) · ~40-90s each")
+        txt, used_model = _or_chat(DEEP_SYSTEM, prompt, max_tokens=6000, timeout=180)
+        if txt and _report_complete(txt):
+            break
+    if not txt:
+        say(2, f"failed — {used_model}")
+        return None, f"failed: {used_model}"
+    say(2, "saving report")
+    path = BASE_DIR / "evaluations" / f"eval_{item_id}.md"
+    path.parent.mkdir(exist_ok=True)
+    header = (f"# Deep Evaluation — {row['title']}\n\n"
+              f"*Source: {row['source']} · {row['meta']} · evaluated {datetime.now():%Y-%m-%d %H:%M} · model: {used_model}*\n\n---\n\n")
+    path.write_text(header + txt)
+    conn = db()
+    conn.execute("UPDATE items SET report_path=? WHERE id=?", (str(path), item_id))
+    conn.commit(); conn.close()
+    return str(path), "new"
+
+
+BASE_DIR = Path(__file__).parent
+
+
+def demo_link():
+    """Quick-tunnel URLs rotate on every restart, so the link lives in config, not code."""
+    try:
+        return json.loads((BASE / "sources_config.json").read_text()).get("demo_link", "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+TEMPLATES = {
+    "hinglish_dental": ("Hinglish - clinic DM",
+        "Namaste {name} ji! Main businesses ke liye AI receptionist banata hoon - aapka patient raat ko 11 baje bhi WhatsApp kare, turant professional reply jaata hai, aur unka naam, problem, budget subah aapko Hot-leads list mein mil jaata hai.\n\n"
+        "Khud try kariye - abhi live hai: {link}\n\nSetup 5000, monthly 2500. Pehle 7 din free - pasand aaye toh hi aage. Ek chhoti call kar lein?"),
+    "english_dental": ("English - clinic DM",
+        "Hi {name}, I saw {business} - great reviews! I build AI receptionists that reply to your patients on WhatsApp instantly - even at 11pm - qualify them and give you a Hot-lead list every morning.\n\n"
+        "It is live right now - talk to it yourself: {link}\n\nSetup 5000 + 2500/month. First 7 days free. Worth 10 minutes on a call?"),
+    "followup": ("Gentle follow-up (day 3)",
+        "{name} ji, quick follow-up - no pressure. Last week I installed this for a clinic and they stopped losing after-hours inquiries entirely. If timing is wrong, just reply later and I will not ping again.\n\n{link}"),
+    "idea_pitch": ("Pitch a productized idea",
+        "Hi {name}, I am building {idea} - early birds get it at {price}. First 3 customers get lifetime updates. Interested? 2-min demo: {link}"),
+}
+
+STATUSES = ["new", "contacted", "replied", "call", "won", "dead"]
+
+
+def out_db():
+    conn = sqlite3.connect(DB)
+    conn.execute("""CREATE TABLE IF NOT EXISTS prospects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT,
+        name TEXT, business TEXT, phone TEXT, channel TEXT DEFAULT 'whatsapp',
+        status TEXT DEFAULT 'new', template TEXT DEFAULT 'hinglish_dental',
+        last_contact TEXT, followup TEXT, notes TEXT)""")
+    return conn
+
+
+def seed_from_csv():
+    conn = out_db()
+    n = conn.execute("SELECT COUNT(*) FROM prospects").fetchone()[0]
+    if n > 0:
+        conn.close(); return
+    import csv as _csv
+    path = Path.home() / "Project/Project_evaluators/track_a_cash/prospects.csv"
+    if not path.exists():
+        conn.close(); return
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for row in _csv.DictReader(open(path)):
+        if not row.get("clinic_name") or row.get("clinic_name", "").startswith("("):
+            continue
+        conn.execute("INSERT INTO prospects (created,name,business,phone,status,template,notes) VALUES (?,?,?,?,?,?,?)",
+                     (now, row.get("contact_person") or "", row["clinic_name"], row.get("phone", ""),
+                      "new", "hinglish_dental", "area: " + row.get("area", "")[:40]))
+    conn.commit(); conn.close()
+
+
+def _outreach_page(name="", status="all", prefill=0):
+    seed_from_csv()
+    conn = out_db(); conn.row_factory = sqlite3.Row
+    if status in STATUSES:
+        rows = conn.execute("SELECT * FROM prospects WHERE status=? ORDER BY id DESC", (status,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM prospects ORDER BY id DESC").fetchall()
+    counts = dict(conn.execute("SELECT status, COUNT(*) FROM prospects GROUP BY status").fetchall())
+    conn.close()
+
+    def esc(x):
+        return (x or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    from urllib.parse import quote
+    due = datetime.now().strftime("%Y-%m-%d")
+    prefill_js = ""
+    if prefill:
+        ic = db(); ic.row_factory = sqlite3.Row
+        idea = ic.execute("SELECT title, url, pitch FROM items WHERE id=?", (prefill,)).fetchone()
+        ic.close()
+        if idea:
+            ptitle = (idea["title"] or "")[:120].replace('"', "").replace("'", "")
+            def _js(s):
+                return (s or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+            notes = (_js(idea["pitch"]) if idea["pitch"]
+                     else f"Pitch: {ptitle} (source: {idea['url']})")
+            prefill_js = ('<script>window.__PREFILL__={template:"idea_pitch",'
+                          f'notes:"{notes}",'
+                          'idea:"' + _js(ptitle[:80]) + '"};</script>')
+    cards = ""
+    for r in rows:
+        tname, ttext = TEMPLATES.get(r["template"], list(TEMPLATES.values())[0])
+        idea_txt = r["notes"].replace("Pitch: ", "") if (r["notes"] or "").startswith("Pitch: ") else "a new micro-product"
+        msg = (ttext.replace("{name}", r["name"] or "there").replace("{business}", r["business"] or "your business")
+                .replace("{link}", demo_link() or "(demo link coming)")
+                .replace("{idea}", idea_txt[:90]).replace("{price}", "999"))
+        phone = re.sub(r"[^0-9]", "", r["phone"] or "")
+        if phone and not phone.startswith("91"):
+            phone = "91" + phone
+        phone = phone if len(phone) >= 10 else ""
+        wa = ("https://wa.me/" + phone + "?text=" + quote(msg)) if phone else ""
+        due_badge = ' <span class="due">FOLLOW UP TODAY</span>' if r["followup"] and r["followup"] <= due else ""
+        wa_btn = ('<a class="obtn wa" href="' + wa + '" target="_blank">WhatsApp: open prefilled</a>'
+                  if phone else '<span class="obtn off">no phone yet</span>')
+        stbtns = "".join('<a class="stb ' + ('on' if r["status"] == st else '') + '" href="/outreach/status/'
+                         + str(r["id"]) + '/' + st + '">' + st + '</a>' for st in STATUSES)
+        cards += ('<div class="ocard st-' + r["status"] + '">'
+                  + '<div class="orow"><b>' + esc(r["name"]) + '</b><span class="obiz">' + esc(r["business"])
+                  + '</span><span class="ost st-' + r["status"] + '">' + r["status"] + '</span>' + due_badge + '</div>'
+                  + '<div class="om">' + esc(r["notes"]) + '</div>'
+                  + '<details><summary>message (' + tname + ')</summary><pre class="omsg">' + esc(msg) + '</pre></details>'
+                  + '<div class="oacts">' + wa_btn
+                  + ' <a class="obtn" href="#" onclick="copyMsg(this); return false;" data-msg="' + esc(msg) + '">copy</a>'
+                  + '<span class="ostatus">' + stbtns + '</span></div></div>')
+
+    chips = '<div class="chips"><a class="chip on" href="/outreach">All</a>' + "".join(
+        '<a class="chip" href="/outreach?status=' + st + '">' + st + ' (' + str(counts.get(st, 0)) + ')</a>' for st in STATUSES) + "</div>"
+    html = (BASE / "outreach.html").read_text()
+    return (html.replace("{{CARDS}}", cards).replace("{{CHIPS}}", chips)
+                .replace("</body>", (prefill_js or "") + "</body>"))
+
+
+app = FastAPI(title="IdeaPulse")
+
+from launch import router as launch_router
+app.include_router(launch_router)
+
+from money import router as money_router
+app.include_router(money_router)
+
+
+@app.get("/jobs/{jid}")
+def job_status(jid: str):
+    import jobs
+    j = jobs.get(jid)
+    return j if j else {"state": "missing"}
+
+
+@app.get("/outreach", response_class=HTMLResponse)
+def outreach(status: str = "all", prefill: int = 0):
+    return _outreach_page(status=status, prefill=prefill)
+
+
+@app.get("/outreach/status/{pid}/{st}")
+def out_status(pid: int, st: str):
+    if st in STATUSES:
+        conn = out_db()
+        conn.execute("UPDATE prospects SET status=?, last_contact=? WHERE id=?",
+                     (st, datetime.now().strftime("%Y-%m-%d %H:%M"), pid))
+        conn.commit(); conn.close()
+    return RedirectResponse("/outreach", status_code=303)
+
+
+@app.post("/outreach/add")
+async def outreach_add(request: Request):
+    f = await request.form()
+    conn = out_db()
+    conn.execute("INSERT INTO prospects (created,name,business,phone,status,template,followup,notes) VALUES (?,?,?,?,?,?,?,?)",
+                 (datetime.now().strftime("%Y-%m-%d %H:%M"), f.get("name", ""), f.get("business", ""),
+                  f.get("phone", ""), "new", f.get("template", "hinglish_dental"),
+                  f.get("followup") or None, f.get("notes", "")))
+    conn.commit(); conn.close()
+    return RedirectResponse("/outreach", status_code=303)
+
+NUTSHELL_SYSTEM = ("Explain the given app/product idea in simple plain English (like to a smart 12-year-old). "
+                   "Max 3 short sentences covering: what it does, who would pay for it, why it's trending. "
+                   "No jargon, no markdown, plain text only.")
+
+
+@app.post("/explain/{item_id}")
+@app.get("/explain/{item_id}")
+def explain(item_id: int):
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT title, meta, source, nutshell FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    if not row:
+        return {"nutshell": "not found"}
+    if row["nutshell"]:
+        return {"nutshell": row["nutshell"]}
+    txt, model = _or_chat(NUTSHELL_SYSTEM,
+        f"Idea: {row['title']} (from {row['source']}) — {row['meta']}", max_tokens=900, timeout=90)
+    txt = txt.replace("\n", " ").strip() if txt else ""
+    if txt:
+        conn = db()
+        conn.execute("UPDATE items SET nutshell=? WHERE id=?", (txt[:400], item_id))
+        conn.commit(); conn.close()
+    return {"nutshell": txt or f"explanation failed — {model}"}
+
+
+PITCH_SYSTEM = ("You write cold WhatsApp outreach messages for a solo developer in India selling "
+                "micro-products for fast cash. Write ONE ready-to-send WhatsApp message. Casual-warm, "
+                "plain text, no markdown, no subject lines. The message MUST contain, in order: "
+                "(1) 1-line hook about the pain, (2) 2 lines on what the product does and the concrete "
+                "outcome, (3) a price line in INR (pick a sensible amount for the idea, or early-bird "
+                "pricing if unclear), (4) a soft question CTA, (5) the demo link placeholder {link} alone "
+                "on the final line. Keep it under 90 words. Output ONLY the message text.")
+
+
+@app.post("/pitch/{item_id}")
+@app.get("/pitch/{item_id}")
+def pitch(item_id: int):
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT title, meta, source, what, pitch FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    if not row:
+        return {"pitch": "", "status": "item not found"}
+    if row["pitch"]:
+        return {"pitch": row["pitch"], "status": "cached"}
+    txt, model = _or_chat(PITCH_SYSTEM,
+        f"Idea: {row['title']}\nWhat to build: {row['what'] or '(not evaluated yet)'}\n"
+        f"Context: {row['meta']}\nSource: {row['source']}",
+        max_tokens=1500, timeout=120)
+    if not txt:
+        return {"pitch": "", "status": f"failed: {model}"}
+    txt = txt.strip()[:900]
+    conn = db()
+    conn.execute("UPDATE items SET pitch=? WHERE id=?", (txt, item_id))
+    conn.commit(); conn.close()
+    return {"pitch": txt, "status": "new", "model": model}
+
+
+@app.post("/deepeval/{item_id}")
+@app.get("/deepeval/{item_id}")
+def deepeval(item_id: int, force: int = 0, async_: int = 0):
+    """Deep evaluate one idea. async_=1 returns a job id so the page can show progress."""
+    if async_:
+        import jobs
+        conn = db(); conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT title FROM items WHERE id=?", (item_id,)).fetchone()
+        conn.close()
+        title = (row["title"] if row else f"#{item_id}")[:70]
+
+        def work(tick, label):
+            seen = {"step": 0}
+
+            def progress(step, msg):
+                label(msg)
+                if step > seen["step"]:
+                    tick(step - seen["step"])
+                    seen["step"] = step
+
+            path, status = deep_eval(item_id, force=bool(force), progress=progress)
+            label("report saved" if status in ("new", "existing") else f"failed — {status}")
+            # a failed report must surface as a red bar, not a green tick
+            if status not in ("new", "existing"):
+                raise RuntimeError(status)
+            return {"path": path, "status": status}
+
+        return {"job": jobs.start(f"Deep evaluating “{title}”", 2, work)}
+    path, status = deep_eval(item_id, force=bool(force))
+    return {"path": path, "status": status}
+
+
+def _inline(text):
+    import html as _html
+    e = _html.escape(text.strip())
+    codes = []
+    def keep(m):
+        codes.append("<code>" + m.group(1) + "</code>")
+        return f"\x01{len(codes) - 1}\x01"
+    e = re.sub(r"`([^`]+)`", keep, e)
+    e = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2" target="_blank">\1</a>', e)
+    e = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", e)
+    e = re.sub(r"(?<![*\w])\*([^*]+)\*(?![*\w])", r"<i>\1</i>", e)
+    e = re.sub(r"(?<![_\w])_([^_]+)_(?![_\w])", r"<i>\1</i>", e)
+    for i, c in enumerate(codes):
+        e = e.replace(f"\x01{i}\x01", c)
+    return e
+
+
+def _table(lines):
+    rows = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in lines]
+    rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r if c)]
+    if not rows:
+        return ""
+    head, body = rows[0], rows[1:]
+    th = "".join(f"<th>{_inline(c)}</th>" for c in head)
+    trs = "".join("<tr>" + "".join(f'<td data-label="{_inline(re.sub(r"[*`]", "", head[i]) if i < len(head) else "")}">{_inline(c)}</td>'
+                                   for i, c in enumerate(r)) + "</tr>" for r in body)
+    return f'<div class="tbl"><table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table></div>'
+
+
+def _md_to_html(md):
+    """Markdown → HTML for model reports: headings, tables, lists, quotes, code, links."""
+    import html as _html
+    blocks = []
+    def stash(m):
+        blocks.append('<pre class="code">' + _html.escape(m.group(1)) + "</pre>")
+        return f"\x00{len(blocks) - 1}\x00"
+    md = re.sub(r"```[^\n]*\n(.*?)```", stash, md, flags=re.S)
+    lines = md.split("\n")
+    out, lst = [], None
+    def close_list():
+        nonlocal lst
+        if lst:
+            out.append(f"</{lst}>"); lst = None
+    def open_list(kind):
+        nonlocal lst
+        if lst != kind:
+            close_list(); out.append(f"<{kind}>"); lst = kind
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("|"):
+            close_list()
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            out.append(_table(lines[i:j])); i = j; continue
+        i += 1
+        if not s:
+            close_list(); continue
+        h = re.match(r"^(#{1,4})\s+(.*)", s)
+        if h:
+            close_list(); n = min(len(h.group(1)), 3)
+            out.append(f"<h{n}>{_inline(h.group(2))}</h{n}>")
+        elif re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", s):
+            close_list(); out.append("<hr>")
+        elif s.startswith(">"):
+            close_list(); out.append("<blockquote>" + _inline(s.lstrip("> ")) + "</blockquote>")
+        elif re.match(r"^[-*•]\s+", s):
+            open_list("ul"); out.append("<li>" + _inline(re.sub(r"^[-*•]\s+", "", s)) + "</li>")
+        elif re.match(r"^\d+[.)]\s+", s):
+            open_list("ol"); out.append("<li>" + _inline(re.sub(r"^\d+[.)]\s+", "", s)) + "</li>")
+        elif re.fullmatch(r"\x00\d+\x00", s):
+            close_list(); out.append(s)
+        else:
+            close_list(); out.append("<p>" + _inline(s) + "</p>")
+    close_list()
+    html = "\n".join(out)
+    for k, b in enumerate(blocks):
+        html = html.replace(f"\x00{k}\x00", b)
+    return html
+
+
+def _report_complete(md):
+    return (bool(re.search(r"^#+\s*Final call", md, re.I | re.M))
+            and bool(re.search(r"[.!?][*_\"')\]]*$", md.rstrip())))
+
+
+REPORT_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Full report — IdeaPulse</title>
+<style>
+*{box-sizing:border-box}
+body{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:32px 24px 80px;line-height:1.7;max-width:880px;margin:0 auto;font-size:16px}
+h1{font-size:26px;line-height:1.3;margin:14px 0 6px}
+h2{color:#4ade80;font-size:20px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid #1d2a33}
+h3{color:#93c5fd;font-size:17px;margin:22px 0 8px}
+p{margin:10px 0}ul,ol{margin:10px 0 10px 24px}li{margin:6px 0}
+b{color:#fff}i{color:#a7f3d0}a{color:#4ade80}
+code{background:#111b21;border:1px solid #1d2a33;border-radius:5px;padding:1px 6px;font-size:14px;color:#fbbf24}
+.code{background:#111b21;border:1px solid #1d2a33;border-radius:8px;padding:14px;overflow-x:auto;font-size:14px;white-space:pre-wrap}
+blockquote{border-left:3px solid #10b981;background:#0a1f16;margin:12px 0;padding:10px 14px;border-radius:6px;color:#d1fae5}
+hr{border:none;border-top:1px solid #1d2a33;margin:22px 0}
+.tbl{overflow-x:auto;margin:14px 0;border:1px solid #1d2a33;border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th{background:#13232c;color:#93c5fd;text-align:left;font-weight:600;padding:10px 12px;border-bottom:1px solid #22343f}
+td{padding:10px 12px;border-top:1px solid #1d2a33;vertical-align:top}
+tbody tr:nth-child(even) td{background:#0f1a20}
+.meta{color:#8fa3ad;font-size:13.5px}
+.back{color:#4ade80;text-decoration:none;font-size:14px}
+.warn{background:#2a1d05;border:1px solid #713f12;color:#fde68a;border-radius:10px;padding:12px 16px;margin:16px 0;font-size:14.5px}
+.warn button{background:#f59e0b;color:#111;border:none;border-radius:16px;padding:6px 16px;font-weight:700;cursor:pointer;margin-left:8px}
+@media (max-width:640px){
+  body{padding:18px 14px 60px;font-size:15.5px}
+  h1{font-size:21px}
+  .tbl{border:none}
+  table,thead,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  tr{border:1px solid #1d2a33;border-radius:10px;margin-bottom:10px;overflow:hidden}
+  td{border-top:1px solid #1d2a33;background:none!important}
+  td:first-child{border-top:none;background:#13232c!important;font-weight:600}
+  td[data-label]:not(:first-child)::before{content:attr(data-label);display:block;color:#93c5fd;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+}
+</style></head><body>
+<a class="back" href="/">← back to dashboard</a>
+{{BODY}}
+<script>
+async function regen(id, btn){
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  const r = await (await fetch('/deepeval/' + id + '?force=1&async_=1')).json();
+  JobBar.watch(r.job, (j) => {
+    if (j.state === 'done') location.reload();
+    else { btn.textContent = 'Failed — ' + (j.message || 'unknown'); btn.disabled = false; }
+  });
+}
+</script>
+{{JOBBAR}}
+</body></html>"""
+
+
+@app.get("/report/{item_id}", response_class=HTMLResponse)
+def report(item_id: int):
+    conn = db(); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT report_path FROM items WHERE id=?", (item_id,)).fetchone()
+    conn.close()
+    md = ""
+    if row and row["report_path"]:
+        try:
+            md = Path(row["report_path"]).read_text()
+        except Exception:
+            pass
+    if not md:
+        return HTMLResponse('<p style="font-family:sans-serif;padding:30px">Report not available — run 🔬 deep evaluate first.</p>', status_code=404)
+    body = _md_to_html(md)
+    body = re.sub(r"<p><i>(Source:.*?)</i></p>", r'<p class="meta">\1</p>', body, count=1)
+    if not _report_complete(md):
+        warn = (f'<div class="warn">⚠ This report was cut off before the end (the model ran out of space).'
+                f'<button onclick="regen({item_id}, this)">Regenerate full report</button></div>')
+        body = re.sub(r"(</h1>)", r"\1" + warn.replace("\\", "\\\\"), body, count=1)
+    return HTMLResponse(REPORT_PAGE.replace("{{BODY}}", body)
+                        .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
+
+
+@app.post("/fetch")
+@app.get("/fetch")
+def fetch(async_: int = 0):
+    """Scrape all sources. async_=1 returns a job id so the page can show per-source progress."""
+    if async_:
+        import jobs
+
+        def work(tick, label):
+            import httpx as _hx
+            total, report = 0, []
+            srcs = discover_sources()
+            with _hx.Client(headers=UA, timeout=15, follow_redirects=True) as client:
+                for i, (name, fn) in enumerate(srcs, 1):
+                    label(f"{i}/{len(srcs)} · {name}")
+                    try:
+                        got = fn(client)
+                        got = got[0] if isinstance(got, tuple) else got
+                        n = save_items(name, got)
+                        set_status(name, "ok", n)
+                        report.append(f"{name}: +{n}")
+                        total += n
+                    except Exception as e:
+                        set_status(name, f"FAILED {type(e).__name__}", 0)
+                        report.append(f"{name}: FAILED ({type(e).__name__})")
+                    tick(1)
+            label(f"{total} new items from {len(srcs)} sources")
+            return {"new_items": total, "sources": report}
+
+        n = len(discover_sources())
+        return {"job": jobs.start("Fetching all sources", n, work)}
+    total, report = fetch_all()
+    return {"new_items": total, "sources": report}
+
+
+@app.post("/evaluate")
+@app.get("/evaluate")
+def evaluate(limit: int = 25, async_: int = 0):
+    """Evaluate pending items. async_=1 returns a job id so the page can show progress."""
+    if async_:
+        import jobs
+        limit = max(1, min(limit, 60))
+
+        def work(tick, label):
+            used = {}
+            conn2 = db(); conn2.row_factory = sqlite3.Row
+            rows = conn2.execute("""SELECT id, title, meta FROM items
+                WHERE verdict IS NULL OR verdict='ERROR'
+                ORDER BY verdict IS NOT NULL, score DESC, eng DESC LIMIT ?""",
+                (limit,)).fetchall()
+            conn2.close()
+            for i, r in enumerate(rows, 1):
+                label(f"{i}/{len(rows)} · {r['title'][:60]}")
+                d, model = _eval_call(r["title"], r["meta"])
+                used[model] = used.get(model, 0) + 1
+                c = db()
+                c.execute("""UPDATE items SET verdict=?, buildability=?, ttm_days=?, what=?, reason=?
+                             WHERE id=?""",
+                          (d["verdict"], d["buildability"], d["ttm_days"],
+                           d.get("what", "")[:200], d.get("reason", "")[:200], r["id"]))
+                c.commit(); c.close()
+                tick(1)
+                time.sleep(0.8)
+            label(f"evaluated {len(rows)} ideas")
+            return {"evaluated": len(rows), "models": used}
+
+        n_pending = db().execute("SELECT COUNT(*) FROM items WHERE verdict IS NULL OR verdict='ERROR'").fetchone()[0]
+        total = min(limit, n_pending)
+        return {"job": jobs.start(f"Evaluating {total} ideas", total, work)}
+    n, used = evaluate_items(limit)
+    return {"evaluated": n, "models": used}
+
+
+PAGE_SIZE = 25
+
+
+VERDICT_ORDER = "CASE verdict WHEN 'BUILD' THEN 0 WHEN 'WATCH' THEN 1 WHEN 'SKIP' THEN 3 ELSE 2 END"
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    where, params = [], []
+    if filter == "build":
+        where.append("verdict='BUILD'")
+    elif filter == "watch":
+        where.append("verdict='WATCH'")
+    elif filter == "skip":
+        where.append("verdict='SKIP'")
+    elif filter == "live":
+        where.append("(verdict='BUILD' OR verdict='WATCH')")
+    elif filter == "pending":
+        where.append("(verdict IS NULL OR verdict='ERROR')")
+    if source != "all":
+        where.append("source=?"); params.append(source)
+    wsql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = conn.execute(f"SELECT COUNT(*) c FROM items {wsql}", params).fetchone()["c"]
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    rows = conn.execute(
+        f"SELECT * FROM items {wsql} ORDER BY {VERDICT_ORDER}, buildability DESC, eng DESC, id DESC LIMIT ? OFFSET ?",
+        params + [PAGE_SIZE, page * PAGE_SIZE]).fetchall()
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_count = conn.execute(
+        "SELECT COUNT(*) c FROM items WHERE fetched_on LIKE ?", (f"{today}%",)
+    ).fetchone()["c"]
+    sources = [r[0] for r in conn.execute("SELECT DISTINCT source FROM items ORDER BY source")]
+    src_status = get_statuses()
+    counts = dict(conn.execute("SELECT verdict, COUNT(*) FROM items GROUP BY verdict").fetchall())
+    conn.close()
+
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    cards = ""
+    last_src = None
+    for r in rows:
+        if r["source"] != last_src:
+            cards += f'<div class="src">— {esc(r["source"])} —</div>'
+            last_src = r["source"]
+        flame = "🔥" if (r["score"] >= 6 or r["eng"] >= 100) else ("✨" if (r["score"] >= 3 or r["eng"] >= 30) else "▫️")
+        verdict = r["verdict"] or ""
+        if verdict == "BUILD":
+            b = r["buildability"] or 0
+            bcol = "#4ade80" if b >= 8 else ("#fbbf24" if b >= 5 else "#f87171")
+            tag = f'<span class="v build">🟢 BUILD <b style="color:{bcol}">{b}/10</b> · ~{r["ttm_days"]}d</span>'
+        elif verdict == "WATCH":
+            b = r["buildability"] or 0
+            bcol = "#4ade80" if b >= 8 else ("#fbbf24" if b >= 5 else "#94a3b8")
+            tag = f'<span class="v watch">🟡 WATCH <b style="color:{bcol}">{b}/10</b></span>'
+        elif verdict == "SKIP":
+            tag = '<span class="v skip">⚪ SKIP</span>'
+        elif verdict == "ERROR":
+            tag = f'<span class="v pending" title="{esc(r["reason"])}">⚠ eval failed, retrying</span>'
+        else:
+            tag = '<span class="v pending">⏳ pending</span>'
+        what = f'<div class="what">→ {esc(r["what"])}</div>' if r["what"] else ""
+        why = f' — {esc(r["reason"])[:110]}' if verdict == "SKIP" and r["reason"] else ""
+        report = (f' <a class="report" href="/report/{r["id"]}" target="_blank">📋 full report</a>'
+                  if r["report_path"] else
+                  f' <a class="report" href="#" onclick="deepeval({r["id"]}); return false;">🔬 deep evaluate</a>')
+        report += f' <a class="report" href="#" onclick="explainIdea({r["id"]}); return false;">💬 explain</a>'
+        report += f' <a class="report" href="#" onclick="pitchIdea({r["id"]}); return false;">📤 pitch</a>'
+        if verdict in ("BUILD", "WATCH"):
+            report += f' <a class="report" href="/launch?product={r["id"]}">🚀 where to launch</a>'
+        ns = (f'<div class="nutshell" id="ns_{r["id"]}">💡 {esc(r["nutshell"])}</div>' if r["nutshell"]
+              else f'<div class="nutshell" id="ns_{r["id"]}"></div>')
+        ns += f'<div class="pitchbox" id="pitch_{r["id"]}" style="display:none"></div>'
+        cards += f"""<div class="card {verdict.lower() or ('hotpending' if flame == '🔥' else '')}">
+          <div class="t">{flame} <a class="tlink" href="{esc(r['url'])}" target="_blank">{esc(r['title'])}</a> {tag}</div>
+          {what}
+          {ns}
+          <div class="m">{esc(r['meta'])} · {esc(r['kind'])} · {esc(r['fetched_on'])}{why}{report}</div></div>"""
+    legend = """<div class="legend">
+      <span class="lg"><i style="background:#4ade80"></i> BUILD (go)</span>
+      <span class="lg"><i style="background:#fbbf24"></i> WATCH</span>
+      <span class="lg"><i style="background:#64748b"></i> SKIP</span>
+      <span class="lg"><i style="background:#f97316"></i> 🔥 hot, not yet evaluated</span>
+    </div>"""
+    if not rows:
+        cards = '<div class="empty">No items yet — hit "Fetch now".</div>'
+    legend = ""
+
+    qs = lambda p, f=filter, so=source: f"/?page={p}&filter={f}&source={so}"
+    nav = '<div class="nav">'
+    if page > 0:
+        nav += f'<a href="{qs(page-1)}">← Newer</a>'
+    nav += f'<span class="pg">page {page+1} / {pages} · {total} items</span>'
+    if page < pages - 1:
+        nav += f'<a href="{qs(page+1)}">Older →</a>'
+    nav += "</div>"
+
+    def chip(label, fval, count, emoji=""):
+        cls = "chip on" if filter == fval else "chip"
+        return f'<a class="{cls}" href="/?page=0&filter={fval}&source={source}">{emoji} {label} ({count})</a>'
+    vcounts = {"BUILD": counts.get("BUILD", 0), "WATCH": counts.get("WATCH", 0),
+               "SKIP": counts.get("SKIP", 0), "pending": counts.get(None, 0) + counts.get("", 0) + counts.get("ERROR", 0)}
+    allcount = sum(counts.values())
+    filters_ui = ('<div class="chips">'
+                  + chip("All", "all", allcount)
+                  + chip("🟢 BUILD", "build", vcounts["BUILD"])
+                  + chip("🟡 WATCH", "watch", vcounts["WATCH"])
+                  + chip("⏳ Pending", "pending", vcounts["pending"])
+                  + chip("⚪ SKIP", "skip", vcounts["SKIP"])
+                  + chip("💎 Live only", "live", vcounts["BUILD"] + vcounts["WATCH"])
+                  + "</div>")
+    filters_ui += ('<div class="chips">'
+                   + f'<a class="chip {"on" if source == "all" else ""}" href="/?page=0&filter={filter}&source=all">All sources</a>'
+                   + "".join(f'<a class="chip {"on" if source == so else ""}" href="/?page=0&filter={filter}&source={so.replace(" ", "%20")}">{so}</a>'
+                             for so in sources)
+                   + "</div>")
+    filters_ui += ('<div class="srcstat">'
+                   + "".join(f'<span class="ss {"bad" if "FAIL" in st["status"] or "skipped" in st["status"] else ""}">'
+                             f'{st["source"][:28]}: {st["status"]} (+{st["count"]} @ {st["last_run"]})</span>'
+                             for st in src_status)
+                   + "</div>")
+
+    return (HTML_TEMPLATE.replace("{{CARDS}}", cards).replace("{{NAV}}", nav)
+            .replace("{{COUNT}}", str(today_count)).replace("{{TOTAL}}", str(total))
+            .replace("{{FILTERS}}", filters_ui).replace("{{LEGEND}}", legend).replace("{{DATE}}", today)
+            .replace("{{JOBBAR}}", __import__("jobs").WIDGET)
+            .replace("{{DEMO_LINK}}", json.dumps(demo_link() or "(demo link coming)")))
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IdeaPulse — daily trending ideas</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:28px;max-width:860px;margin:0 auto}
+h1{font-size:26px;font-weight:800}
+.sub{color:#667781;font-size:13px;margin:6px 0 20px}
+.bar{display:flex;gap:10px;margin-bottom:18px}
+button{background:#008069;color:#fff;border:none;border-radius:20px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer}
+button:hover{background:#00a884}
+.stats{color:#667781;font-size:12.5px;align-self:center;margin-left:auto}
+.src{color:#4a6270;font-size:12px;letter-spacing:2px;text-transform:uppercase;margin:22px 0 8px;text-align:center}
+.card{display:block;background:#111b21;border:1px solid #1d2a33;border-radius:12px;padding:14px 16px;margin-bottom:8px;text-decoration:none;color:inherit;transition:border .15s}
+.card:hover{border-color:#00a884}
+.t{font-size:15px;line-height:1.4;font-weight:500}
+.m{color:#667781;font-size:12px;margin-top:5px}
+.empty{color:#667781;text-align:center;padding:60px 0}
+.nav{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0}
+.navout{color:#fbbf24;font-size:15px;text-decoration:none;margin-left:14px;font-weight:600}
+.nav a{color:#4ade80;text-decoration:none;font-size:14px;font-weight:600}
+.nav a:hover{text-decoration:underline}
+.pg{color:#667781;font-size:13px}
+.v{font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px;vertical-align:middle;background:#1d2a33;color:#667781;font-weight:700;white-space:nowrap}
+.v.build{background:#052e1b;color:#4ade80;border:1px solid #14532d}
+.v.watch{background:#2e2605;color:#fbbf24;border:1px solid #713f12}
+.v.skip{background:#1d2a33;color:#94a3b8}
+.what{color:#93c5fd;font-size:12.5px;margin-top:5px}
+.card.build{border-left:4px solid #4ade80;background:#0a1f16}
+.card.watch{border-left:4px solid #fbbf24;background:#171405}
+.card.skip{opacity:.4;border-left:4px solid #334155}
+.card.hotpending{border-left:4px solid #f97316}
+.nutshell{color:#a7f3d0;font-size:12.5px;margin-top:6px;background:#0a1f16;border-left:3px solid #10b981;padding:6px 10px;border-radius:6px;line-height:1.45}
+.pitchbox{color:#fde68a;font-size:12.5px;margin-top:6px;background:#171405;border-left:3px solid #f59e0b;padding:6px 10px;border-radius:6px;line-height:1.5;white-space:pre-wrap}
+.tlink{color:inherit;text-decoration:none}
+.tlink:hover{color:#4ade80}
+.report{color:#a78bfa;font-size:11.5px;margin-left:8px;text-decoration:none}
+.report:hover{text-decoration:underline}
+.srcstat{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 10px}
+.ss{color:#4a6270;font-size:10.5px;background:#111b21;border:1px solid #1d2a33;border-radius:8px;padding:3px 9px}
+.ss.bad{color:#f87171;border-color:#3f1d1d}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.chip{color:#8fa3ad;text-decoration:none;font-size:12.5px;padding:6px 14px;border-radius:16px;border:1px solid #1d2a33;background:#111b21}
+.chip:hover{border-color:#00a884;color:#e9edef}
+.chip.on{background:#008069;color:#fff;border-color:#008069;font-weight:600}
+.legend{display:flex;gap:16px;justify-content:center;margin:4px 0 14px;flex-wrap:wrap}
+.lg{color:#667781;font-size:11.5px;display:flex;align-items:center;gap:5px}
+.lg i{width:10px;height:10px;border-radius:3px;display:inline-block}
+#status{color:#4ade80;font-size:13px;margin-left:12px;align-self:center}
+</style></head>
+<body>
+<h1>⚡ IdeaPulse</h1> <a class="navout" href="/money">💰 First currency</a> <a class="navout" href="/launch">🚀 Launch dirs</a> <a class="navout" href="/outreach">📤 Outreach</a>
+<div class="sub">Daily trending app/SaaS ideas — Show HN, GitHub, Reddit requests, Product Hunt · {{DATE}}</div>
+<div class="bar">
+  <button onclick="fetchNow()">↻ Fetch now</button>
+  <button onclick="evalNow()" style="background:#7c3aed">⚡ Evaluate new</button>
+  <span id="status"></span>
+  <span class="stats">{{COUNT}} today · {{TOTAL}} total</span>
+</div>
+{{FILTERS}}<div id="feed">{{LEGEND}}{{CARDS}}</div>
+{{JOBBAR}}
+<script>
+async function fetchNow(){
+  const s = document.getElementById('status');
+  s.textContent = 'fetching…'; s.style.color = '#667781';
+  const r = await (await fetch('/fetch?async_=1')).json();
+  JobBar.watch(r.job, async (j) => {
+    s.textContent = j.result || 'fetch complete';
+    s.style.color = '#4ade80';
+    await fetch('/evaluate?async_=1&limit=15');
+    setTimeout(() => location.reload(), 1200);
+  });
+}
+async function explainIdea(id){
+  const box = document.getElementById('ns_' + id);
+  if (box.textContent) { box.style.display = box.style.display === 'none' ? 'block' : 'none'; return; }
+  box.textContent = '💡 thinking…';
+  const r = await (await fetch('/explain/' + id)).json();
+  box.textContent = r.nutshell.startsWith('explanation failed') ? '💡 ' + r.nutshell : '💡 ' + r.nutshell;
+}
+async function deepeval(id){
+  const s = document.getElementById('status');
+  s.textContent = ''; s.style.color = '#667781';
+  const r = await (await fetch('/deepeval/' + id + '?async_=1')).json();
+  JobBar.watch(r.job, (j) => {
+    const ok = j.state === 'done';
+    s.textContent = ok ? 'report saved — reloading' : ('failed — ' + (j.message || ''));
+    s.style.color = ok ? '#a78bfa' : '#f87171';
+    if (ok) setTimeout(() => location.reload(), 1500);
+  });
+}
+const DEMO_LINK = {{DEMO_LINK}};
+function filledPitch(p){
+  return p.replaceAll('{link}', DEMO_LINK).replaceAll('{name}', '').replace(/^\\s*Hi\\s*,/, 'Hi there,');
+}
+async function pitchIdea(id){
+  const box = document.getElementById('pitch_' + id);
+  if (box.dataset.done) { box.style.display = box.style.display === 'none' ? 'block' : 'none'; return; }
+  box.style.display = 'block';
+  box.textContent = '📤 drafting pitch… (~10s)';
+  const r = await (await fetch('/pitch/' + id)).json();
+  if (!r.pitch) { box.textContent = '📤 pitch failed — ' + r.status; return; }
+  const msg = filledPitch(r.pitch);
+  box.textContent = '📤 ' + msg;
+  const bar = document.createElement('div');
+  bar.style.marginTop = '6px';
+  const cp = document.createElement('a'); cp.href = '#'; cp.className = 'report'; cp.textContent = 'copy';
+  cp.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(msg); cp.textContent = 'copied ✓';
+    setTimeout(()=>cp.textContent = 'copy', 1200); };
+  const wa = document.createElement('a'); wa.className = 'report'; wa.target = '_blank'; wa.textContent = 'WhatsApp';
+  wa.href = 'https://wa.me/?text=' + encodeURIComponent(msg);
+  const out = document.createElement('a'); out.className = 'report'; out.textContent = 'open in Outreach';
+  out.href = '/outreach?prefill=' + id;
+  bar.append(' ', cp, ' ', wa, ' ', out);
+  box.appendChild(bar);
+  box.dataset.done = 1;
+}
+async function evalNow(){
+  const s = document.getElementById('status');
+  s.textContent = ''; s.style.color = '#667781';
+  const r = await (await fetch('/evaluate?async_=1&limit=25')).json();
+  JobBar.watch(r.job, (j) => {
+    const ok = j.state === 'done';
+    s.textContent = ok ? 'evaluated — reloading' : ('failed — ' + (j.message || ''));
+    s.style.color = ok ? '#a78bfa' : '#f87171';
+    if (ok) setTimeout(() => location.reload(), 1200);
+  });
+}
+</script>
+{{NAV}}
+<script>
+async function fetchNow(){
+  const s = document.getElementById('status');
+  s.textContent = 'fetching…'; s.style.color = '#667781';
+  const r = await (await fetch('/fetch')).json();
+  s.textContent = '+' + r.new_items + ' new · ' + r.sources.join(' · ');
+  s.style.color = '#4ade80';
+  setTimeout(()=>location.reload(), 1200);
+}
+</script>
+</body></html>"""
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "fetch":
+        total, report = fetch_all()
+        print(f"[{datetime.now()}] +{total} items | " + " | ".join(report))
+    elif len(sys.argv) > 1 and sys.argv[1] == "evaluate":
+        n, used = evaluate_items(int(sys.argv[2]) if len(sys.argv) > 2 else 25)
+        print(f"[{datetime.now()}] evaluated {n} items | models: {json.dumps(used)}")
+    else:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8300)

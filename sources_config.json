@@ -1,0 +1,21 @@
+{
+  "demo_link": "",
+  "_comment": "Apify actors run on YOUR Apify account (free tier = 5$/mo credits). Each source reads the actor's LAST run dataset. Set APIFY_TOKEN in ~/.zshrc to activate.",
+  "apify": {
+    "token_env": "APIFY_TOKEN",
+    "actors": [
+      {
+        "name": "Apify Google Trends IN",
+        "actor": "lexis-solutions/google-trends-scraper",
+        "max_items": 15,
+        "fields": {"title": "keyword", "url": "https://trends.google.com/trends/explore?q={keyword}", "meta": "formattedTraffic"}
+      },
+      {
+        "name": "Apify Product Hunt",
+        "actor": "epctex/producthunt-scraper",
+        "max_items": 20,
+        "fields": {"title": "tagline", "url": "url", "meta": "numberOfVotes"}
+      }
+    ]
+  }
+}
