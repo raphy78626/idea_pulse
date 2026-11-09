@@ -272,3 +272,19 @@ def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation
         "report_path": saved,
         "expansion_model": model,
     }
+
+
+def read_report(path):
+    # type: (Optional[str]) -> str
+    """Return report text, or '' when the file is missing or incomplete.
+
+    An incomplete report must never be cached: app stores sim_path only when this
+    returns text, so a truncated run is retried instead of looking finished.
+    """
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text if report_is_complete(text) else ""

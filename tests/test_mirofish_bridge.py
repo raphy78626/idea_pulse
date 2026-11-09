@@ -256,3 +256,23 @@ def test_run_simulation_turns_zep_401_into_install_hint(monkeypatch):
         assert "install_local_graph.py" in str(e)
     else:
         raise AssertionError("expected a preflight failure")
+
+
+def test_read_report_returns_text(tmp_path):
+    p = tmp_path / "r.md"
+    p.write_text("# Report\n\n" + ("Body sentence. " * 30), encoding="utf-8")
+    assert "Body sentence" in mirofish_bridge.read_report(str(p))
+
+
+def test_read_report_returns_empty_for_missing_file(tmp_path):
+    assert mirofish_bridge.read_report(str(tmp_path / "nope.md")) == ""
+
+
+def test_read_report_returns_empty_for_truncated(tmp_path):
+    p = tmp_path / "r.md"
+    p.write_text("# Report\n\n" + ("Body. " * 40) + "cut mid", encoding="utf-8")
+    assert mirofish_bridge.read_report(str(p)) == ""
+
+
+def test_read_report_returns_empty_for_none_path():
+    assert mirofish_bridge.read_report(None) == ""
