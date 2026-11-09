@@ -35,7 +35,8 @@ def db():
     for col in ("eng INTEGER DEFAULT 0", "verdict TEXT", "buildability INTEGER",
                 "ttm_days INTEGER", "what TEXT", "reason TEXT", "report_path TEXT", "nutshell TEXT",
                 "pitch TEXT", "capital INTEGER", "first_payment TEXT", "earn_verdict TEXT",
-                "proof TEXT", "buyer TEXT", "offer_money TEXT", "sim_path TEXT"):
+                "proof TEXT", "buyer TEXT", "offer_money TEXT", "sim_path TEXT",
+                "sim_attempts INTEGER DEFAULT 0", "sim_error TEXT"):
         try:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col}")
         except Exception:
@@ -498,6 +499,35 @@ def evaluate_items(limit=25):
         conn.commit(); conn.close()
         time.sleep(0.8)
     return len(rows), used
+
+
+# Only sources where someone described a problem. Launch feeds (Show HN, Product
+# Hunt, GitHub Trending, dev.to) announce things that already exist, so
+# simulating reactions to them is meaningless.
+SIMULATABLE_SOURCES = ("Reddit business ideas", "Ask HN ideas", "SomebodyMakeThis")
+SIM_MAX_ATTEMPTS = 2
+
+
+def pending_simulations(limit=3):
+    """Ideas that should get a reaction simulation, best first.
+
+    Excludes items already simulated, items at the attempt cap, and sources that
+    are launch announcements rather than described problems.
+    """
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    marks = ",".join("?" * len(SIMULATABLE_SOURCES))
+    rows = conn.execute(
+        """SELECT id, title, meta, source, verdict FROM items
+           WHERE verdict='BUILD'
+             AND source IN (%s)
+             AND COALESCE(sim_attempts, 0) < ?
+             AND (sim_path IS NULL OR sim_path='')
+           ORDER BY COALESCE(buildability, 0) DESC, COALESCE(score, 0) DESC
+           LIMIT ?""" % marks,
+        tuple(SIMULATABLE_SOURCES) + (SIM_MAX_ATTEMPTS, limit)).fetchall()
+    conn.close()
+    return rows
 
 
 DEEP_SYSTEM = ("You are a senior startup evaluator running a full workup for a solo dev in India "

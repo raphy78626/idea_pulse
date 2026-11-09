@@ -61,3 +61,42 @@ def test_simulation_view_renders_report(client, tmp_path):
 def test_simulation_view_404_without_report(client):
     r = client.get("/simulation/1")
     assert r.status_code == 404
+
+
+def test_simulation_columns_exist():
+    conn = ideapulse.db()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(items)")]
+    assert "sim_attempts" in cols
+    assert "sim_error" in cols
+
+
+def test_pending_simulations_selects_only_whitelisted_sources(client):
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET verdict='BUILD' WHERE id=1")
+    conn.execute(
+        "INSERT INTO items (fetched_on,source,title,url,meta,verdict) VALUES (?,?,?,?,?,?)",
+        ("2026-11-09", "Show HN", "Show HN: my launch", "http://x/2", "ctx", "BUILD"))
+    conn.commit(); conn.close()
+    rows = ideapulse.pending_simulations(limit=10)
+    ids = [r["id"] for r in rows]
+    assert 1 not in ids, "Reddit is not in the simulatable whitelist by default"
+    assert 2 not in ids, "launch feeds must never be simulated"
+
+
+def test_pending_simulations_respects_attempt_cap(client):
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET source='Reddit business ideas', verdict='BUILD', sim_attempts=2 WHERE id=1")
+    conn.commit(); conn.close()
+    rows = ideapulse.pending_simulations(limit=10)
+    assert [r["id"] for r in rows] == [], "items at the attempt cap must not be retried"
+
+
+def test_pending_simulations_skips_completed(client):
+    import pathlib, tempfile
+    p = pathlib.Path(tempfile.mkdtemp()) / "sim_1.md"
+    p.write_text("# R\n\n" + ("Body sentence. " * 30), encoding="utf-8")
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET source='Reddit business ideas', verdict='BUILD', sim_path=? WHERE id=1", (str(p),))
+    conn.commit(); conn.close()
+    rows = ideapulse.pending_simulations(limit=10)
+    assert [r["id"] for r in rows] == [], "items with a usable report must be skipped"
