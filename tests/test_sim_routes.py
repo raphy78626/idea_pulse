@@ -11,6 +11,7 @@ import app as ideapulse  # noqa: E402
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ideapulse, "DB", tmp_path / "ideas.db")
+    monkeypatch.setattr(ideapulse, "EVAL_DIR", tmp_path / "evaluations")
     conn = ideapulse.db()
     conn.execute("INSERT INTO items (fetched_on, source, title, url, meta) VALUES (?,?,?,?,?)",
                  ("2026-11-09", "Reddit", "Test idea", "http://x/1", "some context"))
@@ -176,3 +177,30 @@ def test_run_simulations_refuses_when_mirofish_down(client, monkeypatch):
     result = ideapulse.run_simulations(limit=3, max_seconds=600)
     assert result["attempted"] == 0
     assert "MiroFish" in result["error"]
+
+
+def test_run_simulations_writes_only_into_patchable_dir(tmp_path, monkeypatch):
+    """Regression: the suite must not create files in the repo tree."""
+    import pathlib
+    repo_eval = pathlib.Path(ideapulse.__file__).parent / "evaluations"
+    before = set(p.name for p in repo_eval.glob("sim_*.md")) if repo_eval.exists() else set()
+    monkeypatch.setattr(ideapulse, "EVAL_DIR", tmp_path)
+    monkeypatch.setattr(ideapulse, "DB", tmp_path / "ideas.db")
+    conn = ideapulse.db()
+    conn.execute("INSERT INTO items (fetched_on,source,title,url,meta,verdict) VALUES (?,?,?,?,?,?)",
+                 ("2026-11-09", "Reddit business ideas", "t", "http://z/1", "c", "BUILD"))
+    conn.commit(); conn.close()
+
+    def fake_run(title, meta, source, on_stage=None, out_path=None, evaluation=""):
+        p = pathlib.Path(str(out_path))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# R\n\n" + ("Body sentence. " * 30), encoding="utf-8")
+        return {"simulation_id": "s", "report_path": str(p)}
+
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda: (True, ""))
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "run_simulation", fake_run)
+    ideapulse.run_simulations(limit=1, max_seconds=600)
+
+    after = set(p.name for p in repo_eval.glob("sim_*.md")) if repo_eval.exists() else set()
+    assert after == before, "run_simulations must not write into the repo tree"
+    assert list(tmp_path.glob("sim_*.md")), "it should write into EVAL_DIR instead"

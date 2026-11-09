@@ -549,13 +549,13 @@ def run_simulations(limit=3, max_seconds=1800):
     if not rows:
         return summary
 
-    base_dir = Path(__file__).parent
+    EVAL_DIR.mkdir(parents=True, exist_ok=True)
     for row in rows:
         if time.time() - started >= max_seconds:
             summary["skipped"] += 1
             continue
         item_id = row["id"]
-        out_path = base_dir / "evaluations" / ("sim_%d.md" % item_id)
+        out_path = EVAL_DIR / ("sim_%d.md" % item_id)
         evaluation_md = ""
         try:
             conn0 = db()
@@ -641,6 +641,7 @@ def deep_eval(item_id, force=False, progress=None):
 
 
 BASE_DIR = Path(__file__).parent
+EVAL_DIR = BASE_DIR / "evaluations"
 
 
 def demo_link():
