@@ -15,8 +15,15 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+
+class BridgeError(RuntimeError):
+    """A stage failed in a way the caller must surface, never swallow."""
+
+
 MIN_REPORT_CHARS = 200
 MIN_NAMED_ACTORS = 3
+SKILL_SCRIPTS = Path.home() / ".hermes" / "skills" / "mlops" / "foresight" / "scripts"
+STAGE_TIMEOUT_S = 1500
 MAX_TITLE_CHARS = 400
 MAX_META_CHARS = 1200
 
@@ -118,3 +125,46 @@ def _llm_chat(system, user, **kwargs):
     # imported lazily so tests never need OpenRouter or the llm module's state
     import llm
     return llm.chat(system, user, **kwargs)
+
+
+def cli_path():
+    # type: () -> Path
+    return SKILL_SCRIPTS / "mirofish.py"
+
+
+def parse_envelope(text):
+    # type: (str) -> Dict[str, object]
+    """Parse the CLI's JSON envelope out of stdout that may carry warnings."""
+    if not text:
+        raise BridgeError("unreadable response from the simulation CLI (empty output)")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise BridgeError("unreadable response from the simulation CLI: %s" % text.strip()[:200])
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        raise BridgeError("unreadable response from the simulation CLI: %s" % text.strip()[:200])
+    if not isinstance(data, dict):
+        raise BridgeError("unreadable response from the simulation CLI: not an object")
+    if not data.get("ok", False):
+        raise BridgeError(str(data.get("error") or "simulation stage failed"))
+    return data
+
+
+def run_stage(args, timeout=STAGE_TIMEOUT_S):
+    # type: (List[str], int) -> Dict[str, object]
+    """Invoke one CLI stage and return its parsed envelope."""
+    cmd = [str(cli_path()), "--lang", "en"] + list(args)
+    python = os.environ.get("IDEAPULSE_PY") or str(Path.home() / ".hermes/tools/prediction/.venv/bin/python")
+    cmd = [python] + cmd
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise BridgeError("simulation stage timed out after %ds: %s" % (timeout, " ".join(args)))
+    except OSError as exc:
+        raise BridgeError("could not start the simulation CLI: %s" % exc)
+    if proc.returncode != 0 and not (proc.stdout or "").strip():
+        detail = (proc.stderr or "").strip()[-400:]
+        raise BridgeError("simulation CLI failed (%d): %s" % (proc.returncode, detail))
+    return parse_envelope(proc.stdout or "")

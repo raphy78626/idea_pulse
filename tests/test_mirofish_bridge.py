@@ -1,4 +1,6 @@
 """Tests for mirofish_bridge. No network, no model, no subprocess."""
+import json
+
 import mirofish_bridge
 
 
@@ -114,3 +116,57 @@ def test_quality_gate_rejects_thin_seed():
     ok, reason = mirofish_bridge.check_seed_quality("just some prose about a problem")
     assert ok is False
     assert "named" in reason.lower()
+
+
+def test_cli_path_points_at_foresight_skill():
+    p = mirofish_bridge.cli_path()
+    assert p.name == "mirofish.py"
+    assert "foresight" in str(p)
+
+
+def test_parse_envelope_reads_success():
+    out = json.dumps({"ok": True, "project_id": "proj_1"})
+    data = mirofish_bridge.parse_envelope(out)
+    assert data["project_id"] == "proj_1"
+
+
+def test_parse_envelope_raises_on_ok_false():
+    out = json.dumps({"ok": False, "error": "cannot reach MiroFish at http://x"})
+    try:
+        mirofish_bridge.parse_envelope(out)
+    except mirofish_bridge.BridgeError as e:
+        assert "cannot reach MiroFish" in str(e)
+    else:
+        raise AssertionError("expected BridgeError")
+
+
+def test_parse_envelope_raises_on_garbage():
+    try:
+        mirofish_bridge.parse_envelope("not json at all")
+    except mirofish_bridge.BridgeError as e:
+        assert "unreadable" in str(e).lower()
+    else:
+        raise AssertionError("expected BridgeError")
+
+
+def test_parse_envelope_ignores_leading_stderr_noise():
+    out = "some warning line\n" + json.dumps({"ok": True, "characters": 5})
+    assert mirofish_bridge.parse_envelope(out)["characters"] == 5
+
+
+def test_run_stage_always_passes_lang_en(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+
+        class R:
+            returncode = 0
+            stdout = json.dumps({"ok": True})
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(mirofish_bridge.subprocess, "run", fake_run)
+    mirofish_bridge.run_stage(["health"])
+    assert "--lang" in seen["cmd"]
+    assert "en" in seen["cmd"]
