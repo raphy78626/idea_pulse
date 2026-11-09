@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -24,6 +25,8 @@ MIN_REPORT_CHARS = 200
 MIN_NAMED_ACTORS = 3
 SKILL_SCRIPTS = Path.home() / ".hermes" / "skills" / "mlops" / "foresight" / "scripts"
 STAGE_TIMEOUT_S = 1500
+REPORT_RETRY_ATTEMPTS = 8
+REPORT_RETRY_WAIT_S = 5
 MAX_TITLE_CHARS = 400
 MAX_META_CHARS = 1200
 
@@ -208,6 +211,21 @@ def preflight():
     return True, ""
 
 
+def _sleep(seconds):
+    time.sleep(seconds)
+
+
+# MiroFish's simulate stage flushes its terminal state asynchronously, so the
+# report API can briefly return 409 "still active" right after a finished run.
+_SIM_STILL_ACTIVE = "still active"
+
+
+def is_transient_report_rejection(message):
+    # type: (str) -> bool
+    """True only for the known racy 'simulation still active' 409 case."""
+    return bool(message) and _SIM_STILL_ACTIVE in message.lower()
+
+
 def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation=""):
     # type: (str, Optional[str], str, Optional[object], Optional[Path], str) -> Dict[str, object]
     """Run all MiroFish stages for one idea. Raises BridgeError on any failure."""
@@ -269,7 +287,19 @@ def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation
             report_args = ["report", "--simulation-id", simulation_id]
             if saved:
                 report_args += ["--out", saved]
-            data = run_stage(report_args)
+            attempt = 0
+            while True:
+                try:
+                    data = run_stage(report_args)
+                    break
+                except BridgeError as exc:
+                    attempt += 1
+                    if (attempt >= REPORT_RETRY_ATTEMPTS
+                            or not is_transient_report_rejection(str(exc))):
+                        raise
+                    say_once(hi, "waiting for the simulation to settle (%d/%d)"
+                             % (attempt, REPORT_RETRY_ATTEMPTS))
+                    _sleep(REPORT_RETRY_WAIT_S * attempt)
             saved = str(data.get("saved_to") or saved)
         say_once(hi, label)
 

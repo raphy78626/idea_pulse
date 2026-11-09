@@ -309,3 +309,71 @@ def test_accepts_report_ending_in_other_cjk_punctuation():
     for terminator in ("\u3002", "\uff01", "\uff1f", "\u201d", "\u300d"):
         body = ("# Report\n\n" + ("A full sentence here. " * 20)).rstrip() + terminator
         assert mirofish_bridge.report_is_complete(body) is True, terminator
+
+
+def test_is_transient_report_rejection_matches_known_409():
+    msg = "Simulation or Zep graph ingestion is still active; wait for a terminal run status"
+    assert mirofish_bridge.is_transient_report_rejection(msg) is True
+
+
+def test_is_transient_report_rejection_ignores_other_errors():
+    assert mirofish_bridge.is_transient_report_rejection("graph build failed: no JSON") is False
+    assert mirofish_bridge.is_transient_report_rejection("") is False
+
+
+def test_report_stage_retries_until_simulation_settles(monkeypatch, tmp_path):
+    sleeps = []
+    monkeypatch.setattr(mirofish_bridge, "_sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(mirofish_bridge, "expand_idea", lambda t, m: ("A - x\nB - y\nC - z", "m"))
+    state = {"report_calls": 0}
+
+    def fake_run(args, timeout=0):
+        name = args[0]
+        if name == "health":
+            return {"ok": True}
+        if name == "ontology":
+            return {"ok": True, "project_id": "proj_x"}
+        if name == "build":
+            return {"ok": True, "graph_id": "g1"}
+        if name == "simulate":
+            return {"ok": True, "simulation_id": "sim_x"}
+        if name == "report":
+            state["report_calls"] += 1
+            if state["report_calls"] < 3:
+                raise mirofish_bridge.BridgeError(
+                    "Simulation or Zep graph ingestion is still active")
+            return {"ok": True, "saved_to": str(tmp_path / "r.md")}
+        return {"ok": True}
+
+    monkeypatch.setattr(mirofish_bridge, "run_stage", fake_run)
+    result = mirofish_bridge.run_simulation("t", "m", "Reddit", out_path=tmp_path / "r.md")
+    assert result["report_path"] == str(tmp_path / "r.md")
+    assert state["report_calls"] == 3
+    assert len(sleeps) == 2, "should wait between the two failed attempts"
+
+
+def test_report_stage_does_not_retry_real_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(mirofish_bridge, "_sleep", lambda s: None)
+    monkeypatch.setattr(mirofish_bridge, "expand_idea", lambda t, m: ("A - x\nB - y\nC - z", "m"))
+    calls = {"n": 0}
+
+    def fake_run(args, timeout=0):
+        if args[0] == "health":
+            return {"ok": True}
+        if args[0] == "ontology":
+            return {"ok": True, "project_id": "proj_x"}
+        if args[0] == "build":
+            return {"ok": True, "graph_id": "g1"}
+        if args[0] == "simulate":
+            return {"ok": True, "simulation_id": "sim_x"}
+        calls["n"] += 1
+        raise mirofish_bridge.BridgeError("report generation blew up for an unrelated reason")
+
+    monkeypatch.setattr(mirofish_bridge, "run_stage", fake_run)
+    try:
+        mirofish_bridge.run_simulation("t", "m", "Reddit", out_path=tmp_path / "r.md")
+    except mirofish_bridge.BridgeError as e:
+        assert "unrelated reason" in str(e)
+    else:
+        raise AssertionError("expected the error to propagate")
+    assert calls["n"] == 1, "non-transient errors must not be retried"
