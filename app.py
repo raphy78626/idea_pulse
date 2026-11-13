@@ -802,6 +802,9 @@ app.include_router(launch_router)
 from money import router as money_router
 app.include_router(money_router)
 
+from pains_page import router as pains_router
+app.include_router(pains_router)
+
 
 @app.get("/jobs/{jid}")
 def job_status(jid: str):
@@ -1474,7 +1477,7 @@ button:hover{background:#00a884}
 #status{color:#4ade80;font-size:13px;margin-left:12px;align-self:center}
 </style></head>
 <body>
-<h1>⚡ IdeaPulse</h1> <a class="navout" href="/money">💰 First currency</a> <a class="navout" href="/launch">🚀 Launch dirs</a> <a class="navout" href="/outreach">📤 Outreach</a>
+<h1>⚡ IdeaPulse</h1> <a class="navout" href="/money">💰 First currency</a> <a class="navout" href="/launch">🚀 Launch dirs</a> <a class="navout" href="/outreach">📤 Outreach</a> <a class="navout" href="/pains">🩹 Pains</a>
 <div class="sub">Daily trending app/SaaS ideas — Show HN, GitHub, Reddit requests, Product Hunt · {{DATE}}</div>
 <div class="bar">
   <button onclick="fetchNow()">↻ Fetch now</button>
