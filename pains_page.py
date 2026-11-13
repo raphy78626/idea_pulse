@@ -1,18 +1,25 @@
 """/pains — the output of stage 2 (pain_extract.py), readable at a glance.
 
-Each card is one Reddit post the model read: who has the problem, the job they
-are trying to do, how they cope today, what it costs them, any sign they would
-pay, and one quote that was checked word for word against the post.
+Each entry is one Reddit post the model read, led by the one quote that was
+checked word for word against the post, then who has the problem, how they cope
+today, what it costs them and any sign they would pay.
 
 Tabs split the statuses: PAIN (leads), BUILDER (rivals working on the same pain),
-and the rest. The tool tally at the top is the cheapest early hint of a cluster
-before stage 3 exists: the same tool named by many different authors.
+and the rest. The tool index on the left is the cheapest early hint of a cluster
+before stage 3 exists: the same tool named by many different authors. Clicking a
+tool filters the list to posts that name it.
+
+Design: a casebook, not a card grid. The verified quote carries a highlighter
+mark (yellow for a pain, blue underline for a rival), so status is read from the
+evidence itself rather than from a badge.
 """
 import html
 import json
+import re
 import sqlite3
 from collections import Counter
 from pathlib import Path
+from urllib.parse import quote as urlquote
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
@@ -30,8 +37,10 @@ TABS = [  # (query value, status in the table, label)
     ("error", "ERROR", "Errors"),
     ("all", None, "All"),
 ]
-BADGE = {"PAIN": "pain", "BUILDER": "builder", "NOT_PAIN": "no",
-         "UNVERIFIED": "unv", "ERROR": "err"}
+KIND = {"PAIN": "pain", "BUILDER": "builder", "NOT_PAIN": "other",
+        "UNVERIFIED": "flag", "ERROR": "flag"}
+STATUS_WORDS = {"PAIN": "Pain", "BUILDER": "Builder", "NOT_PAIN": "Not a pain",
+                "UNVERIFIED": "Quote not found in post", "ERROR": "Model call failed"}
 
 
 def esc(s):
@@ -60,118 +69,204 @@ def _load(status):
 
 def _tools(row):
     try:
-        return [t for t in json.loads(row["tools"] or "[]") if isinstance(t, str)]
+        return [t.strip() for t in json.loads(row["tools"] or "[]") if isinstance(t, str) and t.strip()]
     except ValueError:
         return []
 
 
 def _tally(rows):
-    """Tool name -> number of distinct authors naming it, case-insensitive."""
+    """[(tool name, number of posts naming it)], case-insensitive, most named first."""
     seen, spelling = Counter(), {}
     for r in rows:
-        for key, name in {t.strip().lower(): t.strip() for t in _tools(r)}.items():
+        for key, name in {t.lower(): t for t in _tools(r)}.items():
             spelling.setdefault(key, name)
             seen[key] += 1
-    return [(spelling[k], n) for k, n in seen.most_common(15)]
+    return [(spelling[k], n) for k, n in seen.most_common(18)]
 
 
-def _line(label, value):
-    return f'<div class="ln"><span>{label}</span> {esc(value)}</div>' if value else ""
+def _source(r):
+    """'r/realtors, 7 comments, by u/someone' from the stored url, meta and author."""
+    sub = re.search(r"reddit\.com/(r/[^/]+)/", r["url"] or "")
+    comments = re.search(r"(\d+) comments?", r["meta"] or "")
+    parts = [sub.group(1) if sub else ""]
+    if comments:
+        parts.append(f'{comments.group(1)} comment{"" if comments.group(1) == "1" else "s"}')
+    if r["author"]:
+        parts.append(f'by u/{r["author"]}')
+    return ", ".join(p for p in parts if p)
 
 
-def _card(r):
+def _fact(label, value):
+    return f"<dt>{label}</dt><dd>{esc(value)}</dd>" if value else ""
+
+
+def _entry(r, show_status):
     st = r["status"] or ""
-    tools = "".join(f'<span class="tool">{esc(t)}</span>' for t in _tools(r))
-    quote = f'<blockquote>“{esc(r["quote"])}”</blockquote>' if r["quote"] else ""
-    err = _line("Error", r["error"]) if st == "ERROR" else ""
-    who = f' · u/{esc(r["author"])}' if r["author"] else ""
+    kind = KIND.get(st, "other")
+    if r["quote"]:
+        lead = f'<blockquote class="q"><mark>{esc(r["quote"])}</mark></blockquote>'
+    else:
+        lead = f'<p class="q q-none">{esc(r["job"] or r["title"])}</p>'
+    status = f'<span class="st">{STATUS_WORDS.get(st, esc(st))}. </span>' if show_status else ""
+    facts = (_fact("Wants to", r["job"] if r["quote"] else "") + _fact("Today", r["workaround"])
+             + _fact("Costs them", r["cost_signal"]) + _fact("Would pay", r["pay_signal"])
+             + (_fact("Error", r["error"]) if st == "ERROR" else ""))
+    tools = "".join(f'<a class="tool" href="/pains?status=all&amp;tool={esc(urlquote(t.lower()))}">{esc(t)}</a>'
+                    for t in _tools(r))
     return (
-        f'<div class="card {BADGE.get(st, "no")}">'
-        f'<div class="head"><span class="vb {BADGE.get(st, "no")}">{esc(st)}</span>'
-        f'<span class="who">{esc(r["persona"])}</span></div>'
-        f'<div class="title"><a href="{esc(r["url"])}" target="_blank" rel="noopener">{esc(r["title"])}</a></div>'
-        f'{quote}'
-        f'{_line("Job", r["job"])}{_line("Today", r["workaround"])}'
-        f'{_line("Cost", r["cost_signal"])}{_line("Would pay", r["pay_signal"])}{err}'
-        f'<div class="meta">{tools}<span class="src">{esc(r["meta"])}{who} · read {esc(r["extracted_on"])}</span></div>'
-        f'</div>')
+        f'<article class="entry {kind}">'
+        f'{lead}'
+        f'<p class="who">{status}{esc(r["persona"])}</p>'
+        + (f'<dl>{facts}</dl>' if facts else "")
+        + f'<p class="src"><a class="post" href="{esc(r["url"])}" target="_blank" rel="noopener">{esc(r["title"])}</a>'
+        f'<span class="where">{esc(_source(r))}</span></p>'
+        + (f'<p class="tools">{tools}</p>' if tools else "")
+        + '</article>')
+
+
+def _headline(counts):
+    pains = counts.get("PAIN", 0)
+    builders = counts.get("BUILDER", 0)
+    total = sum(counts.values())
+    if not total:
+        return "No posts have been read yet."
+    people = "person describes" if pains == 1 else "people describe"
+    if builders == 0:
+        rivals = "Nobody here is building a fix yet."
+    else:
+        rivals = ("One is" if builders == 1 else f"{builders} are") + " already building a fix."
+    return f"{pains} {people} a problem in their own work. {rivals}"
 
 
 @router.get("/pains", response_class=HTMLResponse)
-def pains(status: str = "pain"):
+def pains(status: str = "pain", tool: str = ""):
     tab = next((t for t in TABS if t[0] == status), TABS[0])
     rows, counts = _load(tab[1])
+    tally = _tally(rows)
+    tool = tool.strip().lower()
+    if tool:
+        rows = [r for r in rows if tool in {t.lower() for t in _tools(r)}]
 
     def count(t):
         return sum(counts.values()) if t[1] is None else counts.get(t[1], 0)
-    chips = "".join(
-        f'<a class="chip {"on" if t is tab else ""}" href="/pains?status={t[0]}">{t[2]} ({count(t)})</a>'
+    tabs = "".join(
+        f'<a class="tab" href="/pains?status={t[0]}"{" aria-current=page" if t is tab and not tool else ""}>'
+        f'{t[2]} ({count(t)})</a>'
         for t in TABS if t[0] in ("pain", "builder", "all") or count(t))
 
-    tally = _tally(rows)
-    tally_html = ('<div class="tally"><b>Tools named</b> '
-                  + "".join(f'<span class="tool">{esc(n)} ×{c}</span>' for n, c in tally)
-                  + '</div>') if tally else ""
+    top = tally[0][1] if tally else 1
+    index = "".join(
+        f'<li><a href="/pains?status={tab[0]}&amp;tool={esc(urlquote(n.lower()))}"'
+        f'{" aria-current=true" if n.lower() == tool else ""}>'
+        f'<span class="tn">{esc(n)}</span><span class="tc">{c}</span>'
+        f'<span class="bar" style="width:{max(8, round(100 * c / top))}%"></span></a></li>'
+        for n, c in tally)
+    index_html = (f'<aside class="index"><h2>Named in these posts</h2><ul>{index}</ul>'
+                  + (f'<a class="clear" href="/pains?status={tab[0]}">Show all tools</a>' if tool else "")
+                  + '</aside>') if tally else ""
 
-    cards = "".join(_card(r) for r in rows) or (
-        '<div class="empty">No extracted pains here yet.<br>'
-        'Run <code>python app.py extract 60</code> after a fetch, or wait for the 9:00 cron.</div>')
+    filtered = f'<p class="filter">Posts naming <b>{esc(tool)}</b></p>' if tool else ""
+    entries = "".join(_entry(r, tab[1] is None or bool(tool)) for r in rows) or (
+        '<div class="empty"><p>Nothing to read here yet.</p>'
+        '<p>Run <code>python app.py extract 60</code> after a fetch, or wait for the 9:00 run.</p></div>')
 
     return HTMLResponse(f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pains — IdeaPulse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>
+:root{{
+  --ground:#141c23; --surface:#1a242d; --rule:#25313b;
+  --ink:#e8e2d4; --muted:#8b979f; --faint:#5d6b75;
+  --mark:#f0c64a; --mark-bg:rgba(240,198,74,.22); --rival:#7fa8d6; --flag:#e48a78;
+  --serif:'Newsreader',Georgia,'Times New Roman',serif;
+  --sans:'Atkinson Hyperlegible',-apple-system,'Segoe UI',sans-serif;
+}}
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
-  padding:26px;max-width:920px;margin:0 auto;line-height:1.5}}
-h1{{font-size:25px;font-weight:800;display:inline}}
-.navout{{color:#4ade80;font-size:14px;text-decoration:none;margin-left:12px}}
-.sub{{color:#8fa3ad;font-size:13.5px;margin:10px 0 14px;max-width:780px}}
-.sub b{{color:#e9edef}}
-.chips{{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px}}
-.chip{{background:#111b21;border:1px solid #1d2a33;color:#8fa3ad;border-radius:16px;
-  padding:6px 13px;font-size:12.5px;text-decoration:none;font-weight:500}}
-.chip:hover{{border-color:#00a884;color:#e9edef}}
-.chip.on{{background:#008069;color:#fff;border-color:#008069}}
-.tally{{color:#8fa3ad;font-size:12px;margin:4px 0 14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
-.tally b{{color:#e9edef;margin-right:4px}}
-.card{{background:#111b21;border:1px solid #1d2a33;border-radius:12px;padding:13px 16px;margin-bottom:9px}}
-.card.pain{{border-left:4px solid #4ade80}}
-.card.builder{{border-left:4px solid #fbbf24}}
-.card.no{{opacity:.55;border-left:4px solid #334155}}
-.card.unv,.card.err{{border-left:4px solid #f87171}}
-.head{{display:flex;align-items:center;gap:9px;margin-bottom:4px}}
-.vb{{font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:9px;letter-spacing:.4px}}
-.vb.pain{{background:#052e1b;color:#4ade80;border:1px solid #14532d}}
-.vb.builder{{background:#2e2605;color:#fbbf24;border:1px solid #713f12}}
-.vb.no{{background:#1d2a33;color:#94a3b8}}
-.vb.unv,.vb.err{{background:#2a0f0f;color:#f87171}}
-.who{{color:#93c5fd;font-size:12.5px}}
-.title{{font-size:15px;font-weight:500;line-height:1.4}}
-.title a{{color:inherit;text-decoration:none}}
-.title a:hover{{color:#4ade80}}
-blockquote{{color:#d1fae5;font-size:13.5px;margin:8px 0 6px;padding:6px 12px;
-  border-left:3px solid #14532d;background:#0a1f16;border-radius:0 8px 8px 0}}
-.ln{{font-size:12.8px;color:#cbd5e1;margin-top:3px}}
-.ln span{{color:#667781;display:inline-block;min-width:74px;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}}
-.meta{{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
-.tool{{font-size:11px;padding:2px 9px;border-radius:9px;background:#1d2a33;color:#93c5fd;font-weight:600}}
-.src{{color:#4a6270;font-size:11.5px}}
-.empty{{color:#8fa3ad;text-align:center;padding:44px 20px;font-size:13.5px;line-height:1.8}}
-code{{background:#1d2a33;padding:1px 6px;border-radius:5px;color:#e9edef}}
-@media(max-width:640px){{
- body{{padding:18px 16px 60px}}
- h1{{font-size:21px}}
- .ln span{{display:block;min-width:0}}
+body{{background:var(--ground);color:var(--ink);font:16px/1.55 var(--sans);
+  padding:40px 32px 80px;max-width:1120px;margin:0 auto}}
+a{{color:inherit}}
+a:focus-visible{{outline:2px solid var(--mark);outline-offset:3px;border-radius:2px}}
+
+header{{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}}
+h1{{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}}
+header nav a{{color:var(--muted);text-decoration:none;font-size:14px;margin-left:18px}}
+header nav a:hover{{color:var(--ink)}}
+.lede{{font:400 23px/1.4 var(--serif);color:var(--ink);max-width:34em;margin:14px 0 6px;text-wrap:balance}}
+.how{{color:var(--muted);font-size:14px;max-width:42em}}
+
+.tabs{{display:flex;gap:8px 22px;flex-wrap:wrap;margin:30px 0 0;border-bottom:1px solid var(--rule)}}
+.tab{{color:var(--muted);text-decoration:none;font-size:15px;padding:0 0 10px;margin-bottom:-1px;
+  border-bottom:2px solid transparent}}
+.tab:hover{{color:var(--ink)}}
+.tab[aria-current]{{color:var(--ink);border-bottom-color:var(--ink);font-weight:700}}
+
+.layout{{display:grid;grid-template-columns:220px minmax(0,1fr);gap:56px;margin-top:34px}}
+.layout.solo{{grid-template-columns:minmax(0,1fr)}}
+.index h2{{font:700 13px/1.3 var(--sans);color:var(--muted);margin-bottom:12px}}
+.index ul{{list-style:none}}
+.index li a{{display:grid;grid-template-columns:1fr auto;row-gap:4px;text-decoration:none;
+  padding:6px 0;font-size:14px}}
+.index .tc{{color:var(--muted);font-variant-numeric:tabular-nums}}
+.index .bar{{grid-column:1/-1;height:3px;background:var(--rule);border-radius:2px}}
+.index li a:hover .tn,.index li a[aria-current] .tn{{color:var(--mark)}}
+.index li a[aria-current] .bar{{background:var(--mark)}}
+.index .clear{{display:inline-block;margin-top:12px;font-size:13px;color:var(--muted)}}
+
+.filter{{color:var(--muted);font-size:14px;margin-bottom:22px}}
+.filter b{{color:var(--ink)}}
+.entry{{max-width:64ch;padding:0 0 30px;margin-bottom:30px;border-bottom:1px solid var(--rule)}}
+.entry:last-child{{border-bottom:0}}
+.q{{font:400 22px/1.5 var(--serif);margin-bottom:12px}}
+.q mark{{color:var(--ink);background:none;padding:0 .1em;box-decoration-break:clone;-webkit-box-decoration-break:clone}}
+.entry.pain .q mark{{background:linear-gradient(transparent 52%,var(--mark-bg) 52%)}}
+.entry.builder .q mark{{text-decoration:underline 2px var(--rival);text-underline-offset:5px}}
+.entry.other .q,.entry.flag .q{{color:var(--muted)}}
+.entry.other .q mark,.entry.flag .q mark{{color:var(--muted)}}
+.q-none{{font-style:italic}}
+.who{{font-size:15px;color:var(--ink)}}
+.st{{font-weight:700}}
+.entry.builder .st{{color:var(--rival)}} .entry.flag .st{{color:var(--flag)}}
+.entry.pain .st{{color:var(--mark)}} .entry.other .st{{color:var(--muted)}}
+dl{{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:12px 0 0;font-size:14.5px}}
+dt{{color:var(--muted)}}
+dd{{color:var(--ink)}}
+.src{{margin-top:14px;font-size:14px;color:var(--muted)}}
+.post{{font:italic 400 16px/1.4 var(--serif);color:var(--ink);text-decoration:underline;
+  text-decoration-color:var(--faint);text-underline-offset:3px;margin-right:10px}}
+.post:hover{{text-decoration-color:var(--ink)}}
+.where{{white-space:nowrap}}
+.tools{{margin-top:10px;display:flex;gap:6px 14px;flex-wrap:wrap}}
+.tool{{font-size:13px;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--faint)}}
+.tool:hover{{color:var(--ink)}}
+.empty{{color:var(--muted);font-size:15px;padding:30px 0}}
+.empty p+p{{margin-top:8px}}
+code{{background:var(--surface);padding:2px 7px;border-radius:4px;color:var(--ink);font-size:14px}}
+
+@media (max-width:860px){{
+  body{{padding:24px 16px 60px}}
+  h1{{font-size:34px}}
+  .lede{{font-size:19px}}
+  .layout{{grid-template-columns:1fr;gap:24px;margin-top:22px}}
+  .index ul{{display:flex;flex-wrap:wrap;gap:4px 16px}}
+  .index li a{{display:inline-flex;gap:6px;padding:2px 0}}
+  .index .bar{{display:none}}
+  .q{{font-size:19px}}
+  .where{{white-space:normal}}
 }}
 </style></head><body>
-<h1>🩹 Pains</h1>
-<a class="navout" href="/">← IdeaPulse</a>
-<a class="navout" href="/outreach">📤 Outreach</a>
-<div class="sub">Reddit posts where someone describes a problem in their own work, read by a free model.
-Every quote below was <b>checked word for word against the post</b>; tools are only listed if the post names them.
-<b>Builders</b> are people already working on a fix: not leads, but proof the pain is real and a rival to count.</div>
-<div class="chips">{chips}</div>
-{tally_html}
-{cards}
+<header>
+  <h1>Pains</h1>
+  <nav><a href="/">Back to IdeaPulse</a><a href="/outreach">Outreach</a></nav>
+</header>
+<p class="lede">{esc(_headline(counts))}</p>
+<p class="how">Read from Reddit by a free model. Every highlighted quote was found word for word in the post,
+and tools are listed only when the post names them. Builders are not leads, but they prove the pain is real.</p>
+<nav class="tabs" aria-label="Filter by status">{tabs}</nav>
+<div class="layout{"" if index_html else " solo"}">
+{index_html}
+<main>{filtered}{entries}</main>
+</div>
 </body></html>""")

@@ -83,7 +83,21 @@ def test_counts_appear_on_the_tabs(client):
 def test_tools_are_tallied(client):
     seed([("A", reply()), ("B", reply())])
     r = client.get("/pains")
-    assert "Xero ×2" in r.text
+    assert '<span class="tn">Xero</span><span class="tc">2</span>' in r.text
+
+
+def test_clicking_a_tool_filters_to_posts_naming_it(client):
+    seed([("Uses Xero", reply()),
+          ("No tools here", reply(tools_mentioned=[]))])
+    r = client.get("/pains?tool=xero")
+    assert "Uses Xero" in r.text and "No tools here" not in r.text
+    assert "Posts naming <b>xero</b>" in r.text
+
+
+def test_headline_counts_people_and_rivals(client):
+    seed([("A", reply()), ("B", reply()), ("C", reply(author_role="builder"))])
+    assert "2 people describe a problem in their own work. One is already building a fix." \
+        in client.get("/pains").text
 
 
 def test_post_text_is_escaped(client):
