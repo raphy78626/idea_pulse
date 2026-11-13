@@ -1,60 +1,83 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Outreach — IdeaPulse</title>
+{{FONTS}}
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:28px;max-width:900px;margin:0 auto}
-h1{font-size:24px;font-weight:800;display:inline}
-.navout{color:#4ade80;font-size:14px;text-decoration:none;margin-left:14px}
-.sub{color:#667781;font-size:13px;margin:6px 0 16px}
-.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-.chip{color:#8fa3ad;text-decoration:none;font-size:12.5px;padding:6px 14px;border-radius:16px;border:1px solid #1d2a33;background:#111b21}
-.chip:hover{border-color:#00a884;color:#e9edef}
-.chip.on{background:#008069;color:#fff;border-color:#008069;font-weight:600}
-.addbox{background:#111b21;border:1px solid #1d2a33;border-radius:12px;padding:16px;margin:14px 0}
-.addbox input,.addbox select{background:#0b141a;color:#e9edef;border:1px solid #1d2a33;border-radius:8px;padding:9px 12px;font-size:13.5px;margin:3px 6px 3px 0;width:170px}
-.addbox button{background:#008069;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:600;cursor:pointer}
-.ocard{background:#111b21;border:1px solid #1d2a33;border-radius:12px;padding:14px 16px;margin-bottom:10px}
-.ocard.st-won{border-left:4px solid #4ade80}
-.ocard.st-replied,.ocard.st-call{border-left:4px solid #fbbf24}
-.ocard.st-dead{opacity:.45;border-left:4px solid #334155}
-.orow{font-size:15px}
-.obiz{color:#667781;font-size:13px;margin-left:8px}
-.ost{font-size:10.5px;padding:2px 9px;border-radius:10px;background:#1d2a33;margin-left:8px;text-transform:uppercase;font-weight:700;color:#94a3b8}
-.ost.st-won{background:#052e1b;color:#4ade80}
-.ost.st-replied,.ost.st-call{background:#2e2605;color:#fbbf24}
-.due{color:#f87171;font-size:11px;font-weight:700;margin-left:8px;animation:blink 1.5s infinite}
-@keyframes blink{50%{opacity:.4}}
-.om{color:#667781;font-size:12px;margin-top:4px}
-details{margin-top:8px}
-summary{cursor:pointer;color:#7fd4c0;font-size:12.5px}
-.omsg{white-space:pre-wrap;color:#c9d1d9;background:#0b141a;padding:10px 12px;border-radius:8px;font-size:12.5px;margin-top:6px;font-family:inherit}
-.oacts{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
-.obtn{background:#008069;color:#fff;text-decoration:none;font-size:12.5px;padding:7px 14px;border-radius:8px;font-weight:600}
-.obtn.wa{background:#25d366;color:#0b141a}
-.obtn:hover{filter:brightness(1.1)}
-.obtn.off{background:#1d2a33;color:#667781;pointer-events:none}
-.ostatus{margin-left:auto;display:flex;gap:4px}
-.stb{color:#667781;font-size:11px;padding:4px 8px;border-radius:6px;text-decoration:none;border:1px solid #1d2a33}
-.stb.on{color:#fff;background:#008069;border-color:#008069}
+{{THEME_CSS}}
+.add{max-width:66ch;margin:26px 0 0;border:1px solid var(--rule);border-radius:8px;padding:0 18px}
+.add summary{cursor:pointer;padding:14px 0;font-weight:700;font-size:15px}
+.add[open] summary{border-bottom:1px solid var(--rule);margin-bottom:16px}
+.add form{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px;padding-bottom:18px}
+.add .field{display:flex;flex-direction:column;gap:5px}
+.add .wide{grid-column:1/-1}
+.add button{justify-self:start}
+.list{margin-top:34px}
+
+.prospect{max-width:66ch;padding:0 0 28px;margin-bottom:28px;border-bottom:1px solid var(--rule)}
+.prospect:last-child{border-bottom:0}
+.prospect h2{font:500 23px/1.3 var(--serif)}
+.prospect.st-dead h2{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+.biz{color:var(--muted);font-size:15px;margin-top:2px}
+.due{color:var(--flag);font-weight:700;font-size:14.5px;margin-top:8px}
+.when{color:var(--muted);font-size:14px;margin-top:8px}
+.notes{font-size:15px;margin-top:8px}
+
+.stages{list-style:none;display:flex;flex-wrap:wrap;margin:16px 0 0;font-size:13.5px}
+.stages li{display:flex;align-items:center}
+.stages li+li::before{content:"";width:18px;height:1px;background:var(--rule);margin:0 6px}
+.stages li.past+li::before,.stages li.past+li.now::before{background:var(--muted)}
+.stages a{color:var(--faint);text-decoration:none;padding:4px 0}
+.stages li.past a{color:var(--muted)}
+.stages a[aria-current]{color:var(--ground);background:var(--mark);font-weight:700;padding:4px 10px;border-radius:12px}
+.stages a:hover{color:var(--ink)}
+.stages a[aria-current]:hover{color:var(--ground)}
+.st-won .stages a[aria-current]{background:var(--ink)}
+.deadlink{display:inline-block;font-size:13px;color:var(--faint);margin-top:8px}
+.deadlink[aria-current]{color:var(--flag)}
+
+.prospect details{margin-top:14px}
+.prospect summary{cursor:pointer;color:var(--muted);font-size:14px}
+.prospect summary:hover{color:var(--ink)}
+.omsg{white-space:pre-wrap;font:15px/1.6 var(--sans);background:var(--surface);border-radius:6px;padding:12px 14px;margin-top:8px}
+.oacts{display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;margin-top:14px}
+.oacts .btn{padding:10px 16px}
+.copy{font:14px/1.6 var(--sans);color:var(--muted);background:none;border:0;cursor:pointer;
+  text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:3px}
+.copy:hover{color:var(--ink)}
+.nophone{color:var(--faint);font-size:14px}
+
+@media (max-width:860px){
+  .add form{grid-template-columns:1fr}
+}
 </style></head>
 <body>
-<h1>📤 Outreach</h1> <a class="navout" href="/">← IdeaPulse</a> <a class="navout" href="/launch">🚀 Launch checklist</a>
-<div class="sub">Prospect pipeline — click 📲 WhatsApp: message pre-filled, just hit send</div>
-{{CHIPS}}
-<div class="addbox">
+{{HEADER}}
+<p class="lede solo">{{LEDE}}</p>
+<p class="how">Each person moves from New to Won. Open the message in WhatsApp with one tap, send it, then move them to Contacted.</p>
+<details class="add"{{FORM_OPEN}}>
+  <summary>Add a prospect</summary>
   <form action="/outreach/add" method="post">
-    <input name="name" placeholder="Contact name (Dr. Ashok)" required>
-    <input name="business" placeholder="Business (Maurya Dental)">
-    <input name="phone" placeholder="Phone (9198xxxxxxxx)">
-    <select name="template"><option value="hinglish_dental">Hinglish clinic DM</option><option value="english_dental">English clinic DM</option><option value="followup">Follow-up</option><option value="idea_pitch">Idea pitch</option></select>
-    <input name="followup" type="date" title="follow-up date">
-    <input name="notes" placeholder="Notes (area, source…)" style="width:220px">
-    <button>Add +</button>
+    <div class="field"><label for="f-name">Name</label><input id="f-name" name="name" placeholder="Dr. Ashok" required></div>
+    <div class="field"><label for="f-biz">Business</label><input id="f-biz" name="business" placeholder="Maurya Dental"></div>
+    <div class="field"><label for="f-phone">WhatsApp number</label><input id="f-phone" name="phone" placeholder="9198xxxxxxxx" inputmode="tel"></div>
+    <div class="field"><label for="f-tpl">Message</label>
+      <select id="f-tpl" name="template"><option value="hinglish_dental">Hinglish clinic message</option><option value="english_dental">English clinic message</option><option value="followup">Follow-up</option><option value="idea_pitch">Idea pitch</option></select></div>
+    <div class="field"><label for="f-fu">Follow up on</label><input id="f-fu" name="followup" type="date"></div>
+    <div class="field wide"><label for="f-notes">Notes</label><input id="f-notes" name="notes" placeholder="Area, where you found them"></div>
+    <button type="submit" class="btn">Add prospect</button>
   </form>
-</div>
-{{CARDS}}
+</details>
+<nav class="tabs" aria-label="Filter by stage">{{TABS}}</nav>
+<main class="list">{{CARDS}}</main>
 <script>
+async function copyMsg(el){
+  const msg = el.dataset.msg || '';
+  try { await navigator.clipboard.writeText(msg); }
+  catch (e) { prompt('Copy this message:', msg); return; }
+  const old = el.textContent;
+  el.textContent = 'Copied';
+  setTimeout(() => { el.textContent = old; }, 1200);
+}
 if (window.__PREFILL__) {
   const p = window.__PREFILL__;
   const sel = document.querySelector('select[name=template]');

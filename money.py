@@ -10,12 +10,15 @@ is scored by MONEY_SYSTEM in app.py.
 """
 import html
 import json
+import re
 import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+
+import theme
 
 BASE = Path(__file__).parent
 DB = BASE / "ideas.db"
@@ -27,14 +30,6 @@ PRODUCT_SOURCES = ("Product Hunt", "Fazier", "BuildHop", "Awesome Indie",
                    "OpenHunts", "Uneed")
 
 router = APIRouter()
-
-VERDICT_META = {
-    "GO": ("🟢", "GO", "sellable within 2 weeks"),
-    "LATER": ("🟡", "LATER", "money, but slower or needs an audience"),
-    "NO": ("⚪", "NO", "not a fast first rupee"),
-    "ERROR": ("⚠", "RETRY", "evaluation failed"),
-}
-
 
 def esc(s):
     return html.escape(str(s or ""), quote=True)
@@ -90,6 +85,19 @@ def _stats():
     return {r[0]: r[1] for r in rows}
 
 
+PROOF_WORDS = {"yes": "Someone earns from this today", "partial": "Some evidence",
+               "no": "No evidence yet"}
+TIER = {"GO": "hi", "LATER": "lo", "NO": "off"}
+VERDICT_WORDS = {"GO": "Sell now.", "LATER": "Later.", "NO": "Not a quick first payment.",
+                 "ERROR": "Check failed, will retry."}
+
+
+def _days(v):
+    """first_payment is stored as TEXT ('7', '7 days', ''); return whole days or 0."""
+    m = re.search(r"\d+", str(v or ""))
+    return int(m.group()) if m else 0
+
+
 def _card(r):
     def g(k):
         try:
@@ -98,41 +106,30 @@ def _card(r):
             return None
 
     v = (g("earn_verdict") or "").upper()
-    icon, label, desc = VERDICT_META.get(v, ("⏳", "PENDING", "not evaluated yet"))
-    days = g("first_payment") or 0
-    cap = g("capital") or 0
-    proof = (g("proof") or "").lower()
-    proof_badge = {"yes": '<span class="pf yes">✓ earns today</span>',
-                   "partial": '<span class="pf part">~ some evidence</span>',
-                   "no": '<span class="pf no">no evidence</span>'}.get(proof, "")
-
+    days = _days(g("first_payment"))
+    cap = g("capital")
     bits = []
-    if g("what"):
-        bits.append(f'<div class="sell"><b>Sell:</b> {esc(g("what"))}</div>')
-    if g("buyer"):
-        bits.append(f'<div class="to"><b>To:</b> {esc(g("buyer"))}</div>')
-    if g("offer_money"):
-        bits.append(f'<div class="price"><b>Price:</b> {esc(g("offer_money"))}</div>')
-    detail = "".join(bits)
-    reason = f'<div class="rz">💡 {esc(g("reason"))}</div>' if g("reason") else ""
-    meta_bits = []
     if days:
-        meta_bits.append(f'<span class="pill fast">💰 ~{days}d to first payment</span>')
-    if cap == 0:
-        meta_bits.append('<span class="pill zero">₹0 to start</span>')
-    elif cap:
-        meta_bits.append(f'<span class="pill cap">~${cap} to start</span>')
-    meta_bits.append(f'<span class="pill src">{esc(g("source"))}</span>')
+        bits.append(f"first payment in about {days} day{'' if days == 1 else 's'}")
+    if v and v != "ERROR" and cap is not None:
+        bits.append("nothing to spend to start" if not cap else f"about ${cap} to start")
+    detail = (" " + ", ".join(bits) + ".") if bits else ""
+    detail = detail[:2].upper() + detail[2:] if bits else ""
+    verdict = f'<p class="verdict"><span class="vw">{VERDICT_WORDS.get(v, "Not checked yet.")}</span>{esc(detail)}</p>'
 
-    return (f'<div class="card {v.lower() or "none"}">'
-            f'<div class="head"><span class="vb {v.lower() or "none"}">{icon} {label}</span>'
-            f'<span class="vd">{desc}</span></div>'
-            f'<div class="title"><a href="{esc(g("url"))}" target="_blank" rel="noopener">'
-            f'{esc((g("title") or "")[:150])}</a></div>'
-            f'{detail}{reason}'
-            f'<div class="meta">{"".join(meta_bits)} {proof_badge}</div>'
-            f'<div class="raw">{esc((g("meta") or "")[:220])}</div>'
-            f'</div>')
+    facts = "".join(f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in (
+        ("Sell", g("what")), ("To", g("buyer")), ("Price", g("offer_money")),
+        ("Why", g("reason")), ("Evidence", PROOF_WORDS.get((g("proof") or "").lower(), ""))) if val)
+    meta = (g("meta") or "").replace(" · ", ", ")
+    meta = meta if len(meta) <= 140 else meta[:137].rstrip(" ,") + "…"
+    where = ", ".join(x for x in (g("source"), meta) if x)
+
+    return (f'<article class="entry {TIER.get(v, "off")}">'
+            f'<h2><a class="tl" href="{esc(g("url"))}" target="_blank" rel="noopener">'
+            f'<mark>{esc((g("title") or "")[:160])}</mark></a></h2>'
+            f'{verdict}'
+            + (f'<dl class="facts">{facts}</dl>' if facts else "")
+            + f'<p class="meta">{esc(where)}</p></article>')
 
 
 @router.post("/money/scrape")
@@ -211,6 +208,7 @@ def money_evaluate(limit: int = 12, async_: int = 0):
 
 @router.get("/money", response_class=HTMLResponse)
 def money_page(lane: str = "opportunities", verdict: str = "all", order: str = "best"):
+    import jobs
     rows = _rows(lane, verdict, order)
     st = _stats()
     total = sum(st.values())
@@ -218,161 +216,79 @@ def money_page(lane: str = "opportunities", verdict: str = "all", order: str = "
     later = st.get("LATER", 0)
     pend = st.get(None, 0) + st.get("ERROR", 0)
 
+    def link(lane_=None, verdict_=None, order_=None):
+        return (f'/money?lane={quote(lane_ or lane)}&verdict={quote(verdict_ or verdict)}'
+                f'&order={quote(order_ or order)}')
+
+    def need(n, one, many):
+        return f"{n:,} {one if n == 1 else many}"
+    lede = (f'{need(go, "offer", "offers")} you could sell this week. '
+            f'{need(later, "needs", "need")} more time or an audience; {pend:,} not checked yet.')
+
+    tabs = "".join(
+        f'<a class="tab" href="{link(key, "all")}"{" aria-current=page" if lane == key else ""}>{label}</a>'
+        for key, label in (("opportunities", "Opportunities"), ("products", "Buildable products")))
+
+    def opt(kind, key, label):
+        cur = {"verdict": verdict, "order": order}[kind] == key
+        href = link(verdict_=key) if kind == "verdict" else link(order_=key)
+        return f'<a href="{href}"{" aria-current=true" if cur else ""}>{label}</a>'
+    filters = ('<div class="filters"><span class="fl">Show</span>'
+               + opt("verdict", "all", f"All ({total:,})") + opt("verdict", "go", f"Sell now ({go:,})")
+               + opt("verdict", "later", f"Later ({later:,})")
+               + opt("verdict", "pending", f"Not checked yet ({pend:,})") + "</div>"
+               + '<div class="filters"><span class="fl">Sort by</span>'
+               + opt("order", "best", "Best verdict") + opt("order", "quickest", "Quickest money")
+               + opt("order", "cheapest", "Cheapest start") + "</div>")
+
     cards = "".join(_card(r) for r in rows) or (
-        '<div class="empty">Nothing here yet.<br><br>'
-        '<b>Hit “Scrape business ideas”</b> above — it pulls recent posts from '
-        'r/sidehustle, r/juststart, r/smallbusiness, r/consulting and ten more, '
-        'plus Hacker News comments where people say they would pay for something.'
-        '</div>')
+        '<div class="empty"><p>Nothing in this view yet.</p>'
+        '<p>Use <b>Find business ideas</b> to pull posts from r/sidehustle, r/smallbusiness, r/consulting'
+        ' and ten more, plus Hacker News comments where people say they would pay for something.</p></div>')
 
-    def chip(kind, value, label, active):
-        return (f'<a class="chip {"on" if active == value else ""}" '
-                f'href="/money?lane={lane}&verdict={verdict if kind != "verdict" else value}'
-                f'&order={value if kind == "order" else order}">{label}</a>')
+    body = (theme.header("money", "First customer")
+            + f'<p class="lede solo">{esc(lede)}</p>'
+            + '<p class="how">This page asks one thing: what could you sell this week, to whom, for how much,'
+              ' and when does the first payment land? A boring service that sells beats a clever product'
+              ' that needs an audience.</p>'
+            + '<div class="bar"><button type="button" onclick="scrapeB()">Find business ideas</button>'
+              '<button type="button" class="second" onclick="evalB()">Check 12 for first payment</button>'
+              '<span id="st" class="say" role="status"></span></div>'
+            + f'<nav class="tabs" aria-label="What to sell">{tabs}</nav>'
+            + filters
+            + f'<main class="list">{cards}</main>'
+            + jobs.WIDGET + SCRIPT)
+    return HTMLResponse(theme.page("First customer", body, CSS, tab_title="First customer — IdeaPulse"))
 
-    lane_chips = (f'<a class="chip {"on" if lane == "opportunities" else ""}" '
-                  f'href="/money?lane=opportunities&verdict=all&order={order}">'
-                  f'💼 Opportunities</a>'
-                  f'<a class="chip {"on" if lane == "products" else ""}" '
-                  f'href="/money?lane=products&verdict=all&order={order}">'
-                  f'📦 Buildable products</a>')
 
-    v_chips = (f'<a class="chip {"on" if verdict == "all" else ""}" '
-               f'href="/money?lane={lane}&verdict=all&order={order}">All ({total})</a>'
-               f'<a class="chip {"on" if verdict == "go" else ""}" '
-               f'href="/money?lane={lane}&verdict=go&order={order}">🟢 GO ({go})</a>'
-               f'<a class="chip {"on" if verdict == "later" else ""}" '
-               f'href="/money?lane={lane}&verdict=later&order={order}">🟡 LATER ({later})</a>'
-               f'<a class="chip {"on" if verdict == "pending" else ""}" '
-               f'href="/money?lane={lane}&verdict=pending&order={order}">⏳ Pending ({pend})</a>')
+CSS = """
+.filters+.filters{margin-top:8px}
+.list{margin-top:34px}
+.entry:last-child{border-bottom:0}
+"""
 
-    o_chips = (f'<a class="chip {"on" if order == "best" else ""}" '
-               f'href="/money?lane={lane}&verdict={verdict}&order=best">Best verdict</a>'
-               f'<a class="chip {"on" if order == "quickest" else ""}" '
-               f'href="/money?lane={lane}&verdict={verdict}&order=quickest">⚡ Quickest money</a>'
-               f'<a class="chip {"on" if order == "cheapest" else ""}" '
-               f'href="/money?lane={lane}&verdict={verdict}&order=cheapest">₹ Cheapest start</a>')
-
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>First currency — IdeaPulse</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
-  padding:26px;max-width:920px;margin:0 auto;line-height:1.5}}
-h1{{font-size:25px;font-weight:800;display:inline}}
-.navout{{color:#4ade80;font-size:14px;text-decoration:none;margin-left:12px}}
-.sub{{color:#8fa3ad;font-size:13.5px;margin:10px 0 16px;max-width:780px}}
-.sub b{{color:#e9edef}}
-.stats{{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px}}
-.stat{{background:#111b21;border:1px solid #1d2a33;border-radius:11px;padding:10px 15px;min-width:104px}}
-.stat .n{{font-size:20px;font-weight:800;line-height:1.2}}
-.stat .l{{color:#667781;font-size:11px;text-transform:uppercase;letter-spacing:.5px}}
-.stat.go .n{{color:#4ade80}} .stat.lt .n{{color:#fbbf24}} .stat.pd .n{{color:#8fa3ad}}
-.bar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}}
-button{{background:#008069;color:#fff;border:none;border-radius:20px;padding:9px 18px;
-  font-size:13.5px;font-weight:600;cursor:pointer}}
-button:hover{{background:#00a884}}
-button.alt{{background:#7c3aed}} button.alt:hover{{background:#8b5cf6}}
-#st{{color:#4ade80;font-size:12.5px}}
-.chips{{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px}}
-.chip{{background:#111b21;border:1px solid #1d2a33;color:#8fa3ad;border-radius:16px;
-  padding:6px 13px;font-size:12.5px;text-decoration:none;font-weight:500}}
-.chip:hover{{border-color:#00a884;color:#e9edef}}
-.chip.on{{background:#008069;color:#fff;border-color:#008069}}
-.card{{background:#111b21;border:1px solid #1d2a33;border-radius:12px;
-  padding:13px 16px;margin-bottom:9px}}
-.card.go{{border-left:4px solid #4ade80;background:#0a1f16}}
-.card.later{{border-left:4px solid #fbbf24;background:#171405}}
-.card.no{{opacity:.45;border-left:4px solid #334155}}
-.card:hover{{border-color:#00a884}}
-.head{{display:flex;align-items:center;gap:9px;margin-bottom:5px}}
-.vb{{font-size:11px;font-weight:800;padding:2px 9px;border-radius:9px;letter-spacing:.4px}}
-.vb.go{{background:#052e1b;color:#4ade80;border:1px solid #14532d}}
-.vb.later{{background:#2e2605;color:#fbbf24;border:1px solid #713f12}}
-.vb.no{{background:#1d2a33;color:#94a3b8}}
-.vb.none,.vb.error{{background:#1d2a33;color:#667781}}
-.vd{{color:#667781;font-size:11.5px}}
-.title{{font-size:15px;font-weight:500;line-height:1.4}}
-.title a{{color:inherit;text-decoration:none}}
-.title a:hover{{color:#4ade80}}
-.sell{{color:#a7f3d0;font-size:12.8px;margin-top:6px}}
-.sell b{{color:#4ade80}}
-.to{{color:#e9edef;font-size:12.5px;margin-top:4px}}
-.to b{{color:#93c5fd}}
-.price{{color:#fde68a;font-size:12.5px;margin-top:4px}}
-.price b{{color:#fbbf24}}
-.rz{{color:#93c5fd;font-size:12.5px;margin-top:5px}}
-.meta{{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}}
-.pill{{font-size:11px;padding:2px 9px;border-radius:9px;font-weight:700}}
-.pill.fast{{background:#052e1b;color:#4ade80}}
-.pill.zero{{background:#0a1f16;color:#a7f3d0}}
-.pill.cap{{background:#2a1d05;color:#fbbf24}}
-.pill.src{{background:#1d2a33;color:#93c5fd;font-weight:600}}
-.pf{{font-size:11px;padding:2px 9px;border-radius:9px;font-weight:700}}
-.pf.yes{{background:#052e1b;color:#4ade80}}
-.pf.part{{background:#2e2605;color:#fbbf24}}
-.pf.no{{background:#1d2a33;color:#94a3b8}}
-.raw{{color:#4a6270;font-size:11.5px;margin-top:6px;border-top:1px solid #1a2830;padding-top:6px}}
-.empty{{color:#8fa3ad;text-align:center;padding:44px 20px;font-size:13.5px;line-height:1.7}}
-.empty b{{color:#4ade80}}
-@media(max-width:640px){{
- body{{padding:18px 12px 70px}}
- .stat{{min-width:0;flex:1 1 40%}}
- .raw{{display:none}}
- h1{{font-size:21px}}
-}}
-</style></head><body>
-<h1>💰 First currency</h1>
-<a class="navout" href="/">← IdeaPulse</a>
-<a class="navout" href="/launch?tab=ideas">🚀 Launch dirs</a>
-<div class="sub">The single question this board answers: <b>what can you sell this week, to whom,
-for how much, and when does the first payment land?</b> Not "is this a good product" — other pages
-do that. Rows come from business owners describing what actually pays, and from people on HN
-saying they would pay for something. A boring service that sells beats a clever product that
-needs an audience.</div>
-
-<div class="stats">
-  <div class="stat go"><div class="n">{go}</div><div class="l">GO now</div></div>
-  <div class="stat lt"><div class="n">{later}</div><div class="l">Later</div></div>
-  <div class="stat pd"><div class="n">{pend}</div><div class="l">Pending</div></div>
-  <div class="stat"><div class="n">{total}</div><div class="l">Opportunities</div></div>
-</div>
-
-<div class="bar">
-  <button onclick="scrapeB()">↻ Scrape business ideas</button>
-  <button class="alt" onclick="evalB()">⚡ Evaluate for first ₹</button>
-  <span id="st"></span>
-</div>
-
-<div class="chips">{lane_chips}</div>
-<div class="chips">{v_chips}</div>
-<div class="chips">{o_chips}</div>
-
-{cards}
-@@JOBBAR@@
-<script>
-async function scrapeB(){{
+SCRIPT = """<script>
+function say(text, tone){
   const s = document.getElementById('st');
-  s.textContent = ''; s.style.color = '#667781';
+  s.textContent = text;
+  s.style.color = tone === 'bad' ? 'var(--flag)' : (tone === 'good' ? 'var(--ink)' : 'var(--muted)');
+}
+async function scrapeB(){
+  say('Finding business ideas…');
   const r = await (await fetch('/money/scrape?async_=1')).json();
-  JobBar.watch(r.job, (j) => {{
+  JobBar.watch(r.job, (j) => {
     const ok = j.state === 'done';
-    s.textContent = ok ? (j.result || 'scraped') : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#4ade80' : '#f87171';
+    say(ok ? (j.result || 'Found') + '. Reloading…' : 'Search failed: ' + (j.message || ''), ok ? 'good' : 'bad');
     if (ok) setTimeout(() => location.reload(), 1400);
-  }});
-}}
-async function evalB(){{
-  const s = document.getElementById('st');
-  s.textContent = ''; s.style.color = '#667781';
+  });
+}
+async function evalB(){
+  say('Checking 12 ideas for a first payment…');
   const r = await (await fetch('/money/evaluate?async_=1&limit=12')).json();
-  JobBar.watch(r.job, (j) => {{
+  JobBar.watch(r.job, (j) => {
     const ok = j.state === 'done';
-    s.textContent = ok ? 'evaluated — reloading' : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#4ade80' : '#f87171';
+    say(ok ? 'Checked. Reloading…' : 'Check failed: ' + (j.message || ''), ok ? 'good' : 'bad');
     if (ok) setTimeout(() => location.reload(), 1400);
-  }});
-}}
-</script>
-</body></html>""")
+  });
+}
+</script>"""

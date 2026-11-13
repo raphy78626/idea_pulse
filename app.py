@@ -698,6 +698,9 @@ TEMPLATES = {
 }
 
 STATUSES = ["new", "contacted", "replied", "call", "won", "dead"]
+STAGES = STATUSES[:-1]  # the pipeline in order; "dead" can happen at any stage
+STATUS_LABELS = {"new": "New", "contacted": "Contacted", "replied": "Replied", "call": "On a call",
+                 "won": "Won", "dead": "Dead"}
 
 
 def out_db():
@@ -770,24 +773,57 @@ def _outreach_page(name="", status="all", prefill=0):
             phone = "91" + phone
         phone = phone if len(phone) >= 10 else ""
         wa = ("https://wa.me/" + phone + "?text=" + quote(msg)) if phone else ""
-        due_badge = ' <span class="due">FOLLOW UP TODAY</span>' if r["followup"] and r["followup"] <= due else ""
-        wa_btn = ('<a class="obtn wa" href="' + wa + '" target="_blank">WhatsApp: open prefilled</a>'
-                  if phone else '<span class="obtn off">no phone yet</span>')
-        stbtns = "".join('<a class="stb ' + ('on' if r["status"] == st else '') + '" href="/outreach/status/'
-                         + str(r["id"]) + '/' + st + '">' + st + '</a>' for st in STATUSES)
-        cards += ('<div class="ocard st-' + r["status"] + '">'
-                  + '<div class="orow"><b>' + esc(r["name"]) + '</b><span class="obiz">' + esc(r["business"])
-                  + '</span><span class="ost st-' + r["status"] + '">' + r["status"] + '</span>' + due_badge + '</div>'
-                  + '<div class="om">' + esc(r["notes"]) + '</div>'
-                  + '<details><summary>message (' + tname + ')</summary><pre class="omsg">' + esc(msg) + '</pre></details>'
+        is_due = bool(r["followup"] and r["followup"] <= due and r["status"] not in ("won", "dead"))
+        due_line = ('<p class="due">Follow up today</p>' if is_due else
+                    ('<p class="when">Follow up on ' + esc(r["followup"]) + '</p>' if r["followup"] else ""))
+        wa_btn = ('<a class="btn" href="' + esc(wa) + '" target="_blank" rel="noopener">Open in WhatsApp</a>'
+                  if phone else '<span class="nophone">No phone number yet</span>')
+        cur = STAGES.index(r["status"]) if r["status"] in STAGES else -1
+        stages = "".join(
+            '<li class="' + ("past" if i < cur else ("now" if i == cur else "")) + '">'
+            '<a href="/outreach/status/' + str(r["id"]) + '/' + st + '"'
+            + (' aria-current="step"' if i == cur else '') + '>' + STATUS_LABELS[st] + '</a></li>'
+            for i, st in enumerate(STAGES))
+        dead = ('<a class="deadlink" href="/outreach/status/' + str(r["id"]) + '/dead"'
+                + (' aria-current="true">Marked dead' if r["status"] == "dead" else '>Mark dead') + '</a>')
+        cards += ('<article class="prospect st-' + esc(r["status"]) + '">'
+                  + '<h2>' + esc(r["name"] or r["business"] or "Unnamed prospect") + '</h2>'
+                  + ('<p class="biz">' + esc(r["business"]) + '</p>' if r["name"] and r["business"] else '')
+                  + due_line
+                  + ('<p class="notes">' + esc(r["notes"]) + '</p>' if r["notes"] else '')
+                  + '<ol class="stages" aria-label="Stage">' + stages + '</ol>' + dead
+                  + '<details><summary>Show message, ' + esc(tname) + '</summary>'
+                  + '<pre class="omsg">' + esc(msg) + '</pre></details>'
                   + '<div class="oacts">' + wa_btn
-                  + ' <a class="obtn" href="#" onclick="copyMsg(this); return false;" data-msg="' + esc(msg) + '">copy</a>'
-                  + '<span class="ostatus">' + stbtns + '</span></div></div>')
+                  + '<button type="button" class="copy" onclick="copyMsg(this)" data-msg="' + esc(msg)
+                  + '">Copy message</button></div></article>')
+    if not cards:
+        cards = ('<div class="empty"><p>Nobody here yet.</p>'
+                 '<p>Add a prospect above, or use <b>Draft pitch</b> on an idea and send it here.</p></div>')
 
-    chips = '<div class="chips"><a class="chip on" href="/outreach">All</a>' + "".join(
-        '<a class="chip" href="/outreach?status=' + st + '">' + st + ' (' + str(counts.get(st, 0)) + ')</a>' for st in STATUSES) + "</div>"
+    total = sum(counts.values())
+    due_n = sum(1 for r in rows if r["followup"] and r["followup"] <= due
+                and r["status"] not in ("won", "dead")) if status not in STATUSES else None
+    if due_n is None:
+        conn2 = out_db()
+        due_n = conn2.execute("SELECT COUNT(*) FROM prospects WHERE followup IS NOT NULL AND followup != ''"
+                              " AND followup <= ? AND status NOT IN ('won','dead')", (due,)).fetchone()[0]
+        conn2.close()
+    answered = sum(counts.get(s, 0) for s in ("replied", "call", "won"))
+    lede = ("%d %s in the pipeline. %d to follow up today; %d replied so far."
+            % (total, "person" if total == 1 else "people", due_n, answered))
+    tabs = ('<a class="tab" href="/outreach"' + (' aria-current="page"' if status not in STATUSES else '')
+            + '>All (' + str(total) + ')</a>' + "".join(
+                '<a class="tab" href="/outreach?status=' + st + '"'
+                + (' aria-current="page"' if status == st else '') + '>' + STATUS_LABELS[st]
+                + ' (' + str(counts.get(st, 0)) + ')</a>' for st in STATUSES))
+    import theme
     html = (BASE / "outreach.html").read_text()
-    return (html.replace("{{CARDS}}", cards).replace("{{CHIPS}}", chips)
+    return (html.replace("{{FONTS}}", theme.FONTS).replace("{{THEME_CSS}}", theme.CSS)
+                .replace("{{HEADER}}", theme.header("outreach", "Outreach"))
+                .replace("{{LEDE}}", esc(lede)).replace("{{TABS}}", tabs)
+                .replace("{{FORM_OPEN}}", " open" if prefill or not total else "")
+                .replace("{{CARDS}}", cards)
                 .replace("</body>", (prefill_js or "") + "</body>"))
 
 

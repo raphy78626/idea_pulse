@@ -21,6 +21,8 @@ from urllib.parse import quote
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+import theme
+
 BASE = Path(__file__).parent
 DB = BASE / "ideas.db"
 SITES_FILE = BASE / "launch_sites.json"
@@ -63,19 +65,20 @@ def _rows_html(sites, done, product=""):
         cost = s.get("cost", "free")
         cat = s.get("category", "")
         is_done = s_slug in done
-        reel = ' <span class="tag reel" title="from the 78-places reel">reel</span>' if s.get("from_reel") else ""
+        kind = ", ".join(x for x in (cat, cost, "from the reel" if s.get("from_reel") else "") if x)
         out.append(
             f'<div class="row{" done" if is_done else ""}" data-cat="{esc(cat)}" data-cost="{esc(cost)}" '
             f'data-reel="{1 if s.get("from_reel") else 0}" '
             f'data-done="{1 if is_done else 0}" data-q="{esc((name + " " + s.get("note", "")).lower())}">'
-            f'<a class="tick" href="/launch/toggle/{s_slug}?product={quote(product)}" '
-            f'title="{"un-mark" if is_done else "mark as launched"}">{"✅" if is_done else "⬜"}</a>'
+            f'<a class="tick" href="/launch/toggle/{s_slug}?product={quote(product)}" role="checkbox" '
+            f'aria-checked="{"true" if is_done else "false"}" '
+            f'aria-label="{"Mark " + esc(name) + " as not launched" if is_done else "Mark " + esc(name) + " as launched"}">'
+            f'</a>'
             f'<span class="num">{i}</span>'
             f'<div class="body"><div class="nm"><a href="{esc(s.get("url"))}" target="_blank" rel="noopener">'
-            f'{esc(name)}</a> <span class="tag cat">{esc(cat)}</span>'
-            f'<span class="tag cost {esc(cost.replace("+", "p"))}">{esc(cost)}</span>{reel}</div>'
+            f'{esc(name)}</a><span class="kind">{esc(kind)}</span></div>'
             f'<div class="nt">{esc(s.get("note"))}</div></div>'
-            f'<a class="go" href="{esc(s.get("url"))}" target="_blank" rel="noopener">open ↗</a>'
+            f'<a class="go" href="{esc(s.get("url"))}" target="_blank" rel="noopener">Open</a>'
             f'</div>')
     return "\n".join(out)
 
@@ -83,10 +86,10 @@ def _rows_html(sites, done, product=""):
 def _product_options(conn, current):
     rows = conn.execute("""SELECT id, title, verdict FROM items
         WHERE verdict IN ('BUILD','WATCH') ORDER BY buildability DESC, eng DESC, id DESC LIMIT 60""").fetchall()
-    opts = ['<option value="">— general (no product) —</option>']
+    opts = ['<option value="">General, no product</option>']
     for r in rows:
         sel = " selected" if str(r[0]) == current else ""
-        opts.append(f'<option value="{r[0]}"{sel}>{esc(r[2])} · {esc((r[1] or "")[:70])}</option>')
+        opts.append(f'<option value="{r[0]}"{sel}>{esc((r[1] or "")[:70])} ({esc((r[2] or "").title())})</option>')
     return "".join(opts)
 
 
@@ -139,31 +142,31 @@ def _ideas(conn, source="all", verdict="live", limit=60):
 
 def _idea_card(r):
     v = r["verdict"] or ""
-    if v == "BUILD":
-        b = r["buildability"] or 0
-        col = "#4ade80" if b >= 8 else ("#fbbf24" if b >= 5 else "#f87171")
-        tag = f'<span class="v build">🟢 BUILD <b style="color:{col}">{b}/10</b> · ~{r["ttm_days"] or 0}d</span>'
-    elif v == "WATCH":
-        b = r["buildability"] or 0
-        tag = f'<span class="v watch">🟡 WATCH <b>{b}/10</b></span>'
+    b = r["buildability"] or 0
+    days = r["ttm_days"]
+    if v in ("BUILD", "WATCH"):
+        ship = ""
+        if days not in (None, ""):
+            ship = ", could ship within a day" if int(days) <= 1 else f", about {days} days to ship"
+        line = f'<span class="vw">{v.title()}.</span> Buildable {b} of 10{ship}.'
     elif v == "SKIP":
-        tag = '<span class="v skip">⚪ SKIP</span>'
+        line = '<span class="vw">Skipped.</span> ' + esc((r["reason"] or "No reason given")[:140])
     elif v == "ERROR":
-        tag = '<span class="v pending">⚠ retry queued</span>'
+        line = '<span class="vw">Evaluation failed, will retry.</span>'
     else:
-        tag = '<span class="v pending">⏳ not evaluated</span>'
-    what = f'<div class="iwhat">→ {esc(r["what"])}</div>' if r["what"] else ""
-    why = ""
-    if v in ("BUILD", "WATCH") and r["reason"]:
-        why = f'<div class="iwhy">💡 {esc(r["reason"])}</div>'
-    elif v == "SKIP" and r["reason"]:
-        why = f'<div class="iwhy skip"> — {esc(r["reason"][:130])}</div>'
-    return (f'<div class="icard {v.lower() or "none"}" data-v="{esc(v)}" data-src="{esc(r["source"])}" '
+        line = '<span class="vw">Not read yet.</span>'
+    tier = {"BUILD": "hi", "WATCH": "lo"}.get(v, "off")
+    facts = "".join(f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in (
+        ("Idea", r["what"]), ("Why", r["reason"] if v in ("BUILD", "WATCH") else "")) if val)
+    meta = (r["meta"] or "").replace(" · ", ", ")
+    meta = meta if len(meta) <= 140 else meta[:137].rstrip(" ,") + "…"
+    return (f'<article class="entry icard {tier}" data-v="{esc(v)}" data-src="{esc(r["source"])}" '
             f'data-q="{esc((r["title"] + " " + (r["meta"] or "")).lower())}">'
-            f'<div class="it"><a href="{esc(r["url"])}" target="_blank" rel="noopener">'
-            f'{esc(r["title"])}</a> {tag}</div>'
-            f'{what}{why}'
-            f'<div class="im">{esc(r["source"])} · {esc((r["meta"] or "")[:150])}</div></div>')
+            f'<h2><a class="tl" href="{esc(r["url"])}" target="_blank" rel="noopener">'
+            f'<mark>{esc(r["title"])}</mark></a></h2>'
+            f'<p class="verdict">{line}</p>'
+            + (f'<dl class="facts">{facts}</dl>' if facts else "")
+            + f'<p class="meta">{esc(", ".join(x for x in (r["source"], meta) if x))}</p></article>')
 
 
 @router.get("/launch", response_class=HTMLResponse)
@@ -190,256 +193,224 @@ def launch_page(product: str = "", tab: str = "checklist",
     cats = {}
     for s in sites:
         cats[s.get("category", "")] = cats.get(s.get("category", ""), 0) + 1
-    cat_chips = '<button class="chip on" data-cat="all">All ({})</button>'.format(total) + "".join(
-        f'<button class="chip" data-cat="{esc(c)}">{esc(c)} ({n})</button>'
-        for c, n in sorted(cats.items()))
-    cat_chips += ('<button class="chip" data-cost="free">💸 Free tier only ({})</button>'.format(free_n))
-    cat_chips += f'<button class="chip" data-reel="1">🎬 From the reel ({reel_n})</button>'
+    cat_chips = (f'<button type="button" class="chip" data-cat="all" aria-pressed="true">All ({total})</button>'
+                 + "".join(f'<button type="button" class="chip" data-cat="{esc(c)}" aria-pressed="false">'
+                           f'{esc(c)} ({n})</button>' for c, n in sorted(cats.items())))
+    extra_chips = (f'<button type="button" class="chip" data-cost="free" aria-pressed="false">'
+                   f'Free tier only ({free_n})</button>'
+                   f'<button type="button" class="chip" data-reel="1" aria-pressed="false">'
+                   f'From the reel ({reel_n})</button>')
 
-    title_html = (f'<div class="cur">Launching: <b>{esc(cur_title)}</b></div>' if cur_title else "")
-
-    # --- ideas tab: source chips + verdict chips + cards
+    # --- ideas tab
     tot = {k: sum(s.get(k, 0) or 0 for s in stats.values()) for k in ("total", "done", "build", "watch")}
-    src_chips = (f'<a class="chip {"on" if source == "all" else ""}" '
-                 f'href="/launch?tab=ideas&source=all&verdict={verdict}">'
-                 f'All directories ({tot["total"]})</a>')
+
+    def ilink(source_=None, verdict_=None):
+        return (f'/launch?tab=ideas&source={quote(source_ or source)}'
+                f'&verdict={quote(verdict_ or verdict)}')
+    src_opts = (f'<a href="{ilink("all")}"{" aria-current=true" if source == "all" else ""}>'
+                f'All ({tot["total"]:,})</a>')
     for name in SCRAPED:
-        st = stats.get(name, {})
-        n = st.get("total", 0)
-        if not n:
-            continue
-        src_chips += (f'<a class="chip {"on" if source == name else ""}" '
-                      f'href="/launch?tab=ideas&source={quote(name)}&verdict={verdict}">'
-                      f'{esc(name)} ({n})</a>')
-
-    vdefs = [("live", "🟢🟡 Build + Watch", tot["build"] + tot["watch"]),
-             ("build", "🟢 Build", tot["build"]),
-             ("watch", "🟡 Watch", tot["watch"]),
-             ("pending", "⏳ Pending", tot["total"] - tot["done"]),
+        n = stats.get(name, {}).get("total", 0)
+        if n:
+            src_opts += (f'<a href="{ilink(name)}"{" aria-current=true" if source == name else ""}>'
+                         f'{esc(name)} ({n:,})</a>')
+    vdefs = [("live", "Build and watch", tot["build"] + tot["watch"]), ("build", "Build", tot["build"]),
+             ("watch", "Watch", tot["watch"]), ("pending", "Not read yet", tot["total"] - tot["done"]),
              ("all", "All", tot["total"])]
-    v_chips = "".join(
-        f'<a class="chip {"on" if verdict == v else ""}" '
-        f'href="/launch?tab=ideas&source={quote(source)}&verdict={v}">{lbl} ({n})</a>'
-        for v, lbl, n in vdefs)
+    v_opts = "".join(f'<a href="{ilink(verdict_=v)}"{" aria-current=true" if verdict == v else ""}>'
+                     f'{lbl} ({n:,})</a>' for v, lbl, n in vdefs)
 
-    idea_cards = "".join(_idea_card(r) for r in ideas) or \
-        '<div class="empty">Nothing here yet — hit “Fetch directories” above.</div>'
+    idea_cards = "".join(_idea_card(r) for r in ideas) or (
+        '<div class="empty"><p>Nothing in this view yet.</p>'
+        '<p>Use <b>Fetch directories</b> to pull what these directories published.</p></div>')
 
-    # per-directory scorecard
     score_rows = ""
     for name in SCRAPED:
         st = stats.get(name)
         if not st:
             continue
         pctd = round(st["done"] * 100 / st["total"]) if st["total"] else 0
-        score_rows += (f'<tr><td><a href="/launch?tab=ideas&source={quote(name)}&verdict=all">'
-                       f'{esc(name)}</a></td>'
-                       f'<td>{st["total"]}</td>'
-                       f'<td><div class="mini"><div class="mini-fill" style="width:{pctd}%"></div></div>'
-                       f'<span class="dim">{st["done"]}/{st["total"]} · {pctd}%</span></td>'
-                       f'<td class="b">{st["build"]}</td><td class="w">{st["watch"]}</td></tr>')
+        score_rows += (f'<tr><th scope="row"><a href="{ilink(name, "all")}">{esc(name)}</a></th>'
+                       f'<td>{st["total"]:,}</td>'
+                       f'<td><span class="meter"><span style="width:{pctd}%"></span></span>{pctd}%</td>'
+                       f'<td>{st["build"]}</td><td>{st["watch"]}</td></tr>')
 
-    body = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Launch directories — IdeaPulse</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:26px;max-width:900px;margin:0 auto;line-height:1.5}}
-h1{{font-size:25px;font-weight:800;display:inline}}
-.navout{{color:#4ade80;font-size:14px;text-decoration:none;margin-left:14px}}
-.sub{{color:#667781;font-size:13px;margin:8px 0 16px;max-width:760px}}
-.cur{{color:#a7f3d0;font-size:13px;background:#0a1f16;border-left:3px solid #10b981;padding:7px 12px;border-radius:6px;margin-bottom:12px}}
-.bar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}}
-select,input{{background:#111b21;color:#e9edef;border:1px solid #1d2a33;border-radius:9px;padding:9px 12px;font-size:13.5px;max-width:100%}}
-select{{min-width:230px}}
-button{{background:#008069;color:#fff;border:none;border-radius:20px;padding:9px 18px;font-size:13.5px;font-weight:600;cursor:pointer}}
-button:hover{{background:#00a884}}
-.prog{{color:#4ade80;font-size:13px;font-weight:700;margin-left:auto}}
-.pbar{{height:8px;background:#111b21;border:1px solid #1d2a33;border-radius:6px;overflow:hidden;margin:6px 0 16px}}
-.pfill{{height:100%;background:linear-gradient(90deg,#10b981,#4ade80);width:{pct}%}}
-.chips{{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px}}
-.chip{{background:#111b21;border:1px solid #1d2a33;color:#8fa3ad;border-radius:16px;padding:6px 13px;font-size:12.5px;font-weight:500}}
-.chip.on{{background:#008069;color:#fff;border-color:#008069}}
-.row{{display:flex;gap:10px;align-items:flex-start;background:#111b21;border:1px solid #1d2a33;border-radius:11px;padding:11px 14px;margin-bottom:7px}}
-.row.done{{opacity:.5;border-left:3px solid #10b981}}
-.row:hover{{border-color:#00a884}}
-.tick{{text-decoration:none;font-size:17px;line-height:1.2;flex:none}}
-.num{{color:#4a6270;font-size:11px;min-width:20px;text-align:right;padding-top:3px;flex:none}}
-.body{{flex:1;min-width:0}}
-.nm{{font-size:15px;font-weight:500}}
-.nm a{{color:inherit;text-decoration:none}}
-.nm a:hover{{color:#4ade80}}
-.tag{{font-size:10.5px;padding:2px 8px;border-radius:9px;margin-left:6px;vertical-align:middle;font-weight:700;text-transform:uppercase;letter-spacing:.3px}}
-.tag.cat{{background:#1d2a33;color:#93c5fd}}
-.tag.cost{{background:#1d2a33;color:#94a3b8}}
-.tag.cost.free{{background:#052e1b;color:#4ade80}}
-.tag.cost.freep{{background:#2e2605;color:#fbbf24}}
-.tag.cost.paid{{background:#2a1d05;color:#f59e0b}}
-.tag.reel{{background:#1a1030;color:#c4b5fd}}
-.nt{{color:#8fa3ad;font-size:12.5px;margin-top:3px}}
-.go{{color:#4ade80;font-size:11.5px;text-decoration:none;white-space:nowrap;padding-top:4px;flex:none}}
-#st{{color:#4ade80;font-size:12.5px}}
-.hide{{display:none}}
-.tabs{{display:flex;gap:6px;margin:0 0 16px;border-bottom:1px solid #1d2a33}}
-.tab{{padding:10px 18px;font-size:14px;font-weight:600;color:#8fa3ad;text-decoration:none;border-bottom:2px solid transparent}}
-.tab:hover{{color:#e9edef}}
-.tab.on{{color:#4ade80;border-bottom-color:#4ade80}}
-.pane{{display:none}}
-.pane.on{{display:block}}
-.icard{{background:#111b21;border:1px solid #1d2a33;border-radius:11px;padding:12px 15px;margin-bottom:8px}}
-.icard.build{{border-left:4px solid #4ade80;background:#0a1f16}}
-.icard.watch{{border-left:4px solid #fbbf24;background:#171405}}
-.icard.skip{{opacity:.45;border-left:4px solid #334155}}
-.icard:hover{{border-color:#00a884}}
-.it{{font-size:15px;font-weight:500;line-height:1.4}}
-.it a{{color:inherit;text-decoration:none}}
-.it a:hover{{color:#4ade80}}
-.v{{font-size:10.5px;padding:2px 8px;border-radius:9px;margin-left:8px;font-weight:700;white-space:nowrap;vertical-align:middle}}
-.v.build{{background:#052e1b;color:#4ade80;border:1px solid #14532d}}
-.v.watch{{background:#2e2605;color:#fbbf24;border:1px solid #713f12}}
-.v.skip{{background:#1d2a33;color:#94a3b8}}
-.v.pending{{background:#1d2a33;color:#667781}}
-.iwhat{{color:#93c5fd;font-size:12.5px;margin-top:5px}}
-.iwhy{{color:#a7f3d0;font-size:12px;margin-top:4px}}
-.iwhy.skip{{color:#8fa3ad}}
-.im{{color:#667781;font-size:11.5px;margin-top:5px}}
-.empty{{color:#667781;text-align:center;padding:50px 0}}
-table.sc{{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0 18px}}
-table.sc th{{text-align:left;color:#93c5fd;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:7px 10px;border-bottom:1px solid #22343f;font-weight:600}}
-table.sc td{{padding:8px 10px;border-bottom:1px solid #1d2a33}}
-table.sc td a{{color:#e9edef;text-decoration:none}}
-table.sc td a:hover{{color:#4ade80}}
-table.sc td.b{{color:#4ade80;font-weight:700}}
-table.sc td.w{{color:#fbbf24;font-weight:700}}
-.dim{{color:#4a6270}}
-.mini{{height:5px;background:#0b141a;border:1px solid #1d2a33;border-radius:3px;overflow:hidden;margin-bottom:4px;max-width:110px}}
-.mini-fill{{height:100%;background:linear-gradient(90deg,#10b981,#4ade80);border-radius:3px}}
-.sync{{color:#8fa3ad;font-size:12.5px;margin:0 0 10px}}
-@media(max-width:640px){{
- body{{padding:18px 12px 60px}}
- .row{{flex-wrap:wrap}}
- .go{{display:none}}
- select{{width:100%}}
- .prog{{margin-left:0}}
-}}
-</style></head><body>
-<h1>🚀 Launch directories</h1> <a class="navout" href="/">← IdeaPulse</a>
-<div class="sub">Two jobs in one place: <b>checklist</b> = where to launch your product · <b>ideas</b> = what
-those same directories published and how each one scored. Six of them expose machine-readable data and are
-scraped into the normal IdeaPulse pipeline — they are sources like any other feed.</div>
-<div class="tabs">
-  <a class="tab {"on" if tab == "checklist" else ""}" href="/launch?tab=checklist">✅ Checklist</a>
-  <a class="tab {"on" if tab == "ideas" else ""}" href="/launch?tab=ideas">💡 Ideas from these directories</a>
-</div>
+    if tab == "ideas":
+        lede = (f'{tot["build"]} Build and {tot["watch"]} Watch ideas came from these directories. '
+                f'{tot["total"] - tot["done"]:,} not read yet.')
+        how = ('Six of these directories publish machine-readable lists, so IdeaPulse reads them like any '
+               'other feed. Fetch them and evaluate here without leaving the page.')
+    else:
+        lede = f'{done_n} of {total} directories done' + (f' for {cur_title}.' if cur_title else '.')
+        how = ('Pick the product you are launching, then tick each directory once you have posted it. '
+               'Ticks are saved per product, so the same list works for several ideas.')
 
-<div class="pane {"on" if tab == "checklist" else ""}">
-{title_html}
+    tabs = (f'<a class="tab" href="/launch?tab=checklist&product={quote(product)}"'
+            f'{" aria-current=page" if tab != "ideas" else ""}>Checklist</a>'
+            f'<a class="tab" href="/launch?tab=ideas"{" aria-current=page" if tab == "ideas" else ""}>'
+            f'Ideas from these directories</a>')
+
+    checklist = f"""
 <div class="bar">
-  <select id="prod" onchange="location.href='/launch?tab=checklist&product='+encodeURIComponent(this.value)">
-    {prod_options}
-  </select>
-  <button onclick="copyLeft()">📋 Copy remaining links</button>
-  <span id="st"></span>
-  <span class="prog">✅ {done_n} / {total} · {pct}%</span>
+  <label for="prod">Launching</label>
+  <select id="prod" onchange="location.href='/launch?tab=checklist&product='+encodeURIComponent(this.value)">{prod_options}</select>
+  <button type="button" class="second" onclick="copyLeft()">Copy links not done yet</button>
+  <span id="st" class="say" role="status"></span>
 </div>
-<div class="pbar"><div class="pfill"></div></div>
-<div class="chips">{cat_chips}</div>
-<div class="bar"><input id="q" placeholder="search a directory or note…" style="flex:1"></div>
-<div id="list">
-{_rows_html(sites, done, product)}
-</div>
-</div>
+<div class="progress" role="progressbar" aria-valuenow="{pct}" aria-valuemin="0" aria-valuemax="100"
+  aria-label="Directories done"><span style="width:{pct}%"></span></div>
+<div class="filters"><span class="fl">Type</span>{cat_chips}</div>
+<div class="filters"><span class="fl">Only</span>{extra_chips}</div>
+<input id="q" type="search" placeholder="Search a directory or note" aria-label="Search directories">
+<div id="list">{_rows_html(sites, done, product)}</div>"""
 
-<div class="pane {"on" if tab == "ideas" else ""}">
-<div class="sync">Scrape these directories, then evaluate without leaving the page.
-<button onclick="syncNow()">↻ Fetch directories</button>
-<button onclick="evalNow()" style="background:#7c3aed">⚡ Evaluate new</button>
-<span id="ist"></span></div>
-<table class="sc">
-<thead><tr><th>Directory</th><th>Items</th><th>Evaluated</th><th>🟢 Build</th><th>🟡 Watch</th></tr></thead>
-<tbody>{score_rows}</tbody></table>
-<div class="chips">{v_chips}</div>
-<div class="chips">{src_chips}</div>
-<div class="bar"><input id="iq" placeholder="search these ideas…" style="flex:1"></div>
-<div id="ideas">{idea_cards}</div>
+    ideas_pane = f"""
+<div class="bar">
+  <button type="button" onclick="syncNow()">Fetch directories</button>
+  <button type="button" class="second" onclick="evalNow()">Evaluate 10 more</button>
+  <span id="ist" class="say" role="status"></span>
 </div>
-<script>
-const PRODUCT = {json.dumps(product)};
+<table class="sc">
+<thead><tr><th scope="col">Directory</th><th scope="col">Ideas</th><th scope="col">Read so far</th>
+<th scope="col">Build</th><th scope="col">Watch</th></tr></thead>
+<tbody>{score_rows}</tbody></table>
+<div class="filters"><span class="fl">Show</span>{v_opts}</div>
+<div class="filters"><span class="fl">Directory</span>{src_opts}</div>
+<input id="iq" type="search" placeholder="Search these ideas" aria-label="Search ideas">
+<div id="ideas">{idea_cards}</div>"""
+
+    body = (theme.header("launch", "Launch directories")
+            + f'<p class="lede solo">{esc(lede)}</p><p class="how">{how}</p>'
+            + f'<nav class="tabs" aria-label="Sections">{tabs}</nav>'
+            + (ideas_pane if tab == "ideas" else checklist)
+            + SCRIPT.replace("@@PRODUCT@@", json.dumps(product))
+            + ((__import__("jobs").WIDGET) if tab == "ideas" else ""))
+    return HTMLResponse(theme.page("Launch directories", body, CSS,
+                                   tab_title="Launch directories — IdeaPulse"))
+
+
+CSS = """
+.bar label{font-size:14px}
+.bar select{min-width:260px}
+.progress{height:4px;background:var(--rule);border-radius:2px;margin:22px 0 0;max-width:66ch;overflow:hidden}
+.progress span{display:block;height:100%;background:var(--mark)}
+.filters+.filters{margin-top:8px}
+#q,#iq{width:100%;max-width:66ch;margin:22px 0 10px}
+.hide{display:none!important}
+
+.row{display:grid;grid-template-columns:22px 26px minmax(0,1fr) auto;gap:2px 12px;align-items:start;
+  max-width:66ch;padding:14px 0;border-bottom:1px solid var(--rule)}
+.tick{width:20px;height:20px;border:1.5px solid var(--faint);border-radius:4px;margin-top:3px;display:block;
+  text-decoration:none;position:relative}
+.tick:hover{border-color:var(--ink)}
+.row.done .tick{background:var(--mark);border-color:var(--mark)}
+.row.done .tick::after{content:"";position:absolute;left:5px;top:1px;width:6px;height:11px;
+  border:solid var(--ground);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.num{color:var(--faint);font-size:13px;text-align:right;padding-top:4px;font-variant-numeric:tabular-nums}
+.nm{font:400 18px/1.4 var(--serif)}
+.nm a{text-decoration:none}
+.nm a:hover{text-decoration:underline;text-underline-offset:3px}
+.kind{font:14px/1.4 var(--sans);color:var(--muted);margin-left:10px}
+.nt{color:var(--muted);font-size:14.5px;margin-top:2px}
+.row.done .nm,.row.done .nt{color:var(--faint)}
+.go{font-size:14px;color:var(--muted);padding-top:4px;text-decoration:underline;
+  text-decoration-color:var(--faint);text-underline-offset:3px}
+.go:hover{color:var(--ink)}
+
+table.sc{border-collapse:collapse;margin:30px 0 10px;font-size:14.5px;width:100%;max-width:66ch}
+table.sc th,table.sc td{text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--rule);font-weight:400}
+table.sc thead th{color:var(--muted);font-size:13.5px}
+table.sc tbody th a{text-decoration:none}
+table.sc tbody th a:hover{text-decoration:underline}
+table.sc td{font-variant-numeric:tabular-nums}
+.meter{display:inline-block;width:70px;height:4px;background:var(--rule);border-radius:2px;margin-right:8px;
+  vertical-align:middle;overflow:hidden}
+.meter span{display:block;height:100%;background:var(--ink)}
+#ideas{margin-top:24px}
+#ideas .entry:last-child{border-bottom:0}
+
+@media (max-width:860px){
+  .bar select{min-width:0;width:100%}
+  .row{grid-template-columns:22px minmax(0,1fr)}
+  .num,.go{display:none}
+  .kind{display:block;margin-left:0}
+  table.sc th:nth-child(3),table.sc td:nth-child(3){display:none}
+}
+"""
+
+SCRIPT = """<script>
+const PRODUCT = @@PRODUCT@@;
 const chips = [...document.querySelectorAll('.chip')];
 let CAT = 'all', FREE = false, REEL = false;
-chips.forEach(c => c.onclick = () => {{
-  if (c.dataset.cost) {{ FREE = !FREE; c.classList.toggle('on', FREE); }}
-  else if (c.dataset.reel) {{ REEL = !REEL; c.classList.toggle('on', REEL); }}
-  else {{ CAT = c.dataset.cat; chips.forEach(x => {{ if (!x.dataset.cost && !x.dataset.reel) x.classList.toggle('on', x === c); }}); }}
+chips.forEach(c => c.onclick = () => {
+  if (c.dataset.cost) { FREE = !FREE; c.setAttribute('aria-pressed', FREE); }
+  else if (c.dataset.reel) { REEL = !REEL; c.setAttribute('aria-pressed', REEL); }
+  else {
+    CAT = c.dataset.cat;
+    chips.forEach(x => { if (!x.dataset.cost && !x.dataset.reel) x.setAttribute('aria-pressed', x === c); });
+  }
   apply();
-}});
-document.getElementById('q').oninput = apply;
-function apply(){{
-  const q = document.getElementById('q').value.trim().toLowerCase();
+});
+const q = document.getElementById('q');
+if (q) q.oninput = apply;
+function apply(){
+  if (!q) return;
+  const term = q.value.trim().toLowerCase();
   let shown = 0;
-  document.querySelectorAll('.row').forEach(r => {{
-    const okCat = CAT === 'all' || r.dataset.cat === CAT;
-    const okFree = !FREE || r.dataset.cost.startsWith('free');
-    const okReel = !REEL || r.dataset.reel === '1';
-    const okQ = !q || r.dataset.q.includes(q);
-    const show = okCat && okFree && okReel && okQ;
+  document.querySelectorAll('.row').forEach(r => {
+    const show = (CAT === 'all' || r.dataset.cat === CAT) && (!FREE || r.dataset.cost.startsWith('free'))
+      && (!REEL || r.dataset.reel === '1') && (!term || r.dataset.q.includes(term));
     r.classList.toggle('hide', !show);
     if (show) shown++;
-  }});
+  });
   document.getElementById('st').textContent = shown + ' shown';
-}}
-document.querySelectorAll('.tick').forEach(t => {{
+}
+document.querySelectorAll('.tick').forEach(t => {
   if (!t.href.includes('product=')) t.href += '?product=' + encodeURIComponent(PRODUCT);
-}});
-async function copyLeft(){{
+});
+async function copyLeft(){
   const urls = [...document.querySelectorAll('.row')]
     .filter(r => r.dataset.done === '0')
     .map(r => r.querySelector('.go').href);
   const txt = urls.join('\\n');
-  try {{ await navigator.clipboard.writeText(txt); }}
-  catch {{ prompt('Copy these links:', txt); return; }}
+  try { await navigator.clipboard.writeText(txt); }
+  catch { prompt('Copy these links:', txt); return; }
   const s = document.getElementById('st');
-  s.textContent = 'copied ' + urls.length + ' links';
-  setTimeout(() => s.textContent = '', 2000);
-}}
+  s.textContent = 'Copied ' + urls.length + ' links';
+  setTimeout(() => apply(), 2000);
+}
 apply();
-// --- ideas tab: client-side search over the rendered cards
 const iq = document.getElementById('iq');
-if (iq) {{
-  iq.oninput = () => {{
-    const q = iq.value.trim().toLowerCase();
-    document.querySelectorAll('.icard').forEach(c => {{
-      c.classList.toggle('hide', !!q && !c.dataset.q.includes(q));
-    }});
-  }};
-}}
-async function syncNow(){{
-  const s = document.getElementById('ist');
-  s.textContent = ''; s.style.color = '#667781';
+if (iq) {
+  iq.oninput = () => {
+    const term = iq.value.trim().toLowerCase();
+    document.querySelectorAll('.icard').forEach(c => c.classList.toggle('hide', !!term && !c.dataset.q.includes(term)));
+  };
+}
+function say(id, text, tone){
+  const s = document.getElementById(id);
+  s.textContent = text;
+  s.style.color = tone === 'bad' ? 'var(--flag)' : (tone === 'good' ? 'var(--ink)' : 'var(--muted)');
+}
+async function syncNow(){
+  say('ist', 'Fetching directories…');
   const r = await (await fetch('/launch/sync?async_=1')).json();
-  JobBar.watch(r.job, (j) => {{
+  JobBar.watch(r.job, (j) => {
     const ok = j.state === 'done';
-    s.textContent = ok ? (j.result || 'fetched') : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#4ade80' : '#f87171';
+    say('ist', ok ? (j.result || 'Fetched') + '. Reloading…' : 'Fetch failed: ' + (j.message || ''), ok ? 'good' : 'bad');
     if (ok) setTimeout(() => location.reload(), 1200);
-  }});
-}}
-async function evalNow(){{
-  const s = document.getElementById('ist');
-  s.textContent = ''; s.style.color = '#667781';
+  });
+}
+async function evalNow(){
+  say('ist', 'Evaluating 10 ideas…');
   const r = await (await fetch('/launch/evaluate?async_=1&limit=10')).json();
-  JobBar.watch(r.job, (j) => {{
+  JobBar.watch(r.job, (j) => {
     const ok = j.state === 'done';
-    s.textContent = ok ? 'evaluated — reloading' : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#4ade80' : '#f87171';
+    say('ist', ok ? 'Evaluated. Reloading…' : 'Evaluation failed: ' + (j.message || ''), ok ? 'good' : 'bad');
     if (ok) setTimeout(() => location.reload(), 1200);
-  }});
-}}
-</script>
-@@JOBBAR@@
-</body></html>"""
-    jobs_widget = (__import__("jobs").WIDGET) if tab == "ideas" else ""
-    return HTMLResponse(body.replace("@@JOBBAR@@", jobs_widget))
+  });
+}
+</script>"""
 
 
 @router.get("/launch/toggle/{site_slug}")

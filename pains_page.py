@@ -24,6 +24,8 @@ from urllib.parse import quote as urlquote
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
+import theme
+
 BASE = Path(__file__).parent
 DB = BASE / "ideas.db"
 
@@ -159,7 +161,7 @@ def pains(status: str = "pain", tool: str = ""):
         f'<li><a href="/pains?status={tab[0]}&amp;tool={esc(urlquote(n.lower()))}"'
         f'{" aria-current=true" if n.lower() == tool else ""}>'
         f'<span class="tn">{esc(n)}</span><span class="tc">{c}</span>'
-        f'<span class="bar" style="width:{max(8, round(100 * c / top))}%"></span></a></li>'
+        f'<span class="meter" style="width:{max(8, round(100 * c / top))}%"></span></a></li>'
         for n, c in tally)
     index_html = (f'<aside class="index"><h2>Named in these posts</h2><ul>{index}</ul>'
                   + (f'<a class="clear" href="/pains?status={tab[0]}">Show all tools</a>' if tool else "")
@@ -170,103 +172,63 @@ def pains(status: str = "pain", tool: str = ""):
         '<div class="empty"><p>Nothing to read here yet.</p>'
         '<p>Run <code>python app.py extract 60</code> after a fetch, or wait for the 9:00 run.</p></div>')
 
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pains — IdeaPulse</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
-<style>
-:root{{
-  --ground:#141c23; --surface:#1a242d; --rule:#25313b;
-  --ink:#e8e2d4; --muted:#8b979f; --faint:#5d6b75;
-  --mark:#f0c64a; --mark-bg:rgba(240,198,74,.22); --rival:#7fa8d6; --flag:#e48a78;
-  --serif:'Newsreader',Georgia,'Times New Roman',serif;
-  --sans:'Atkinson Hyperlegible',-apple-system,'Segoe UI',sans-serif;
-}}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:var(--ground);color:var(--ink);font:16px/1.55 var(--sans);
-  padding:40px 32px 80px;max-width:1120px;margin:0 auto}}
-a{{color:inherit}}
-a:focus-visible{{outline:2px solid var(--mark);outline-offset:3px;border-radius:2px}}
+    body = (theme.header("pains", "Pains")
+            + f'<p class="lede solo">{esc(_headline(counts))}</p>'
+            + '<p class="how">Read from Reddit by a free model. Every highlighted quote was found word for word'
+              ' in the post, and tools are listed only when the post names them. Builders are not leads,'
+              ' but they prove the pain is real.</p>'
+            + f'<nav class="tabs" aria-label="Filter by status">{tabs}</nav>'
+            + f'<div class="layout{"" if index_html else " solo"}">{index_html}'
+            + f'<main>{filtered}{entries}</main></div>')
+    return HTMLResponse(theme.page("Pains", body, CSS, tab_title="Pains — IdeaPulse"))
 
-header{{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}}
-h1{{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}}
-header nav a{{color:var(--muted);text-decoration:none;font-size:14px;margin-left:18px}}
-header nav a:hover{{color:var(--ink)}}
-.lede{{font:400 23px/1.4 var(--serif);color:var(--ink);max-width:34em;margin:14px 0 6px;text-wrap:balance}}
-.how{{color:var(--muted);font-size:14px;max-width:42em}}
 
-.tabs{{display:flex;gap:8px 22px;flex-wrap:wrap;margin:30px 0 0;border-bottom:1px solid var(--rule)}}
-.tab{{color:var(--muted);text-decoration:none;font-size:15px;padding:0 0 10px;margin-bottom:-1px;
-  border-bottom:2px solid transparent}}
-.tab:hover{{color:var(--ink)}}
-.tab[aria-current]{{color:var(--ink);border-bottom-color:var(--ink);font-weight:700}}
+CSS = """
+.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:56px;margin-top:34px}
+.layout.solo{grid-template-columns:minmax(0,1fr)}
+.index h2{font:700 13px/1.3 var(--sans);color:var(--muted);margin-bottom:12px}
+.index ul{list-style:none}
+.index li a{display:grid;grid-template-columns:1fr auto;row-gap:4px;text-decoration:none;
+  padding:6px 0;font-size:14px}
+.index .tc{color:var(--muted);font-variant-numeric:tabular-nums}
+.index .meter{grid-column:1/-1;height:3px;background:var(--rule);border-radius:2px}
+.index li a:hover .tn,.index li a[aria-current] .tn{color:var(--mark)}
+.index li a[aria-current] .meter{background:var(--mark)}
+.index .clear{display:inline-block;margin-top:12px;font-size:13px;color:var(--muted)}
 
-.layout{{display:grid;grid-template-columns:220px minmax(0,1fr);gap:56px;margin-top:34px}}
-.layout.solo{{grid-template-columns:minmax(0,1fr)}}
-.index h2{{font:700 13px/1.3 var(--sans);color:var(--muted);margin-bottom:12px}}
-.index ul{{list-style:none}}
-.index li a{{display:grid;grid-template-columns:1fr auto;row-gap:4px;text-decoration:none;
-  padding:6px 0;font-size:14px}}
-.index .tc{{color:var(--muted);font-variant-numeric:tabular-nums}}
-.index .bar{{grid-column:1/-1;height:3px;background:var(--rule);border-radius:2px}}
-.index li a:hover .tn,.index li a[aria-current] .tn{{color:var(--mark)}}
-.index li a[aria-current] .bar{{background:var(--mark)}}
-.index .clear{{display:inline-block;margin-top:12px;font-size:13px;color:var(--muted)}}
+.filter{color:var(--muted);font-size:14px;margin-bottom:22px}
+.filter b{color:var(--ink)}
+.entry{max-width:64ch;padding:0 0 30px;margin-bottom:30px;border-bottom:1px solid var(--rule)}
+.entry:last-child{border-bottom:0}
+.q{font:400 22px/1.5 var(--serif);margin-bottom:12px}
+.q mark{color:var(--ink);background:none;padding:0 .1em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.entry.pain .q mark{background:linear-gradient(transparent 52%,var(--mark-bg) 52%)}
+.entry.builder .q mark{text-decoration:underline 2px var(--rival);text-underline-offset:5px}
+.entry.other .q,.entry.flag .q{color:var(--muted)}
+.entry.other .q mark,.entry.flag .q mark{color:var(--muted)}
+.q-none{font-style:italic}
+.who{font-size:15px;color:var(--ink)}
+.st{font-weight:700}
+.entry.builder .st{color:var(--rival)} .entry.flag .st{color:var(--flag)}
+.entry.pain .st{color:var(--mark)} .entry.other .st{color:var(--muted)}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:12px 0 0;font-size:14.5px}
+dt{color:var(--muted)}
+dd{color:var(--ink)}
+.src{margin-top:14px;font-size:14px;color:var(--muted)}
+.post{font:italic 400 16px/1.4 var(--serif);color:var(--ink);text-decoration:underline;
+  text-decoration-color:var(--faint);text-underline-offset:3px;margin-right:10px}
+.post:hover{text-decoration-color:var(--ink)}
+.where{white-space:nowrap}
+.tools{margin-top:10px;display:flex;gap:6px 14px;flex-wrap:wrap}
+.tool{font-size:13px;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--faint)}
+.tool:hover{color:var(--ink)}
 
-.filter{{color:var(--muted);font-size:14px;margin-bottom:22px}}
-.filter b{{color:var(--ink)}}
-.entry{{max-width:64ch;padding:0 0 30px;margin-bottom:30px;border-bottom:1px solid var(--rule)}}
-.entry:last-child{{border-bottom:0}}
-.q{{font:400 22px/1.5 var(--serif);margin-bottom:12px}}
-.q mark{{color:var(--ink);background:none;padding:0 .1em;box-decoration-break:clone;-webkit-box-decoration-break:clone}}
-.entry.pain .q mark{{background:linear-gradient(transparent 52%,var(--mark-bg) 52%)}}
-.entry.builder .q mark{{text-decoration:underline 2px var(--rival);text-underline-offset:5px}}
-.entry.other .q,.entry.flag .q{{color:var(--muted)}}
-.entry.other .q mark,.entry.flag .q mark{{color:var(--muted)}}
-.q-none{{font-style:italic}}
-.who{{font-size:15px;color:var(--ink)}}
-.st{{font-weight:700}}
-.entry.builder .st{{color:var(--rival)}} .entry.flag .st{{color:var(--flag)}}
-.entry.pain .st{{color:var(--mark)}} .entry.other .st{{color:var(--muted)}}
-dl{{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:12px 0 0;font-size:14.5px}}
-dt{{color:var(--muted)}}
-dd{{color:var(--ink)}}
-.src{{margin-top:14px;font-size:14px;color:var(--muted)}}
-.post{{font:italic 400 16px/1.4 var(--serif);color:var(--ink);text-decoration:underline;
-  text-decoration-color:var(--faint);text-underline-offset:3px;margin-right:10px}}
-.post:hover{{text-decoration-color:var(--ink)}}
-.where{{white-space:nowrap}}
-.tools{{margin-top:10px;display:flex;gap:6px 14px;flex-wrap:wrap}}
-.tool{{font-size:13px;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--faint)}}
-.tool:hover{{color:var(--ink)}}
-.empty{{color:var(--muted);font-size:15px;padding:30px 0}}
-.empty p+p{{margin-top:8px}}
-code{{background:var(--surface);padding:2px 7px;border-radius:4px;color:var(--ink);font-size:14px}}
-
-@media (max-width:860px){{
-  body{{padding:24px 16px 60px}}
-  h1{{font-size:34px}}
-  .lede{{font-size:19px}}
-  .layout{{grid-template-columns:1fr;gap:24px;margin-top:22px}}
-  .index ul{{display:flex;flex-wrap:wrap;gap:4px 16px}}
-  .index li a{{display:inline-flex;gap:6px;padding:2px 0}}
-  .index .bar{{display:none}}
-  .q{{font-size:19px}}
-  .where{{white-space:normal}}
-}}
-</style></head><body>
-<header>
-  <h1>Pains</h1>
-  <nav><a href="/">Back to IdeaPulse</a><a href="/outreach">Outreach</a></nav>
-</header>
-<p class="lede">{esc(_headline(counts))}</p>
-<p class="how">Read from Reddit by a free model. Every highlighted quote was found word for word in the post,
-and tools are listed only when the post names them. Builders are not leads, but they prove the pain is real.</p>
-<nav class="tabs" aria-label="Filter by status">{tabs}</nav>
-<div class="layout{"" if index_html else " solo"}">
-{index_html}
-<main>{filtered}{entries}</main>
-</div>
-</body></html>""")
+@media (max-width:860px){
+  .layout{grid-template-columns:1fr;gap:24px;margin-top:22px}
+  .index ul{display:flex;flex-wrap:wrap;gap:4px 16px}
+  .index li a{display:inline-flex;gap:6px;padding:2px 0}
+  .index .meter{display:none}
+  .q{font-size:19px}
+  .where{white-space:normal}
+}
+"""
