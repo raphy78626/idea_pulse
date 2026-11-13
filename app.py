@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote as quote_url
 
 import html
 
@@ -1327,222 +1328,324 @@ def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
     today_count = conn.execute(
         "SELECT COUNT(*) c FROM items WHERE fetched_on LIKE ?", (f"{today}%",)
     ).fetchone()["c"]
-    sources = [r[0] for r in conn.execute("SELECT DISTINCT source FROM items ORDER BY source")]
+    source_counts = dict(conn.execute("SELECT source, COUNT(*) FROM items GROUP BY source").fetchall())
     src_status = get_statuses()
     counts = dict(conn.execute("SELECT verdict, COUNT(*) FROM items GROUP BY verdict").fetchall())
     conn.close()
 
     def esc(s):
-        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return html.escape(str(s or ""), quote=True)
 
-    cards = ""
-    last_src = None
-    for r in rows:
-        if r["source"] != last_src:
-            cards += f'<div class="src">— {esc(r["source"])} —</div>'
-            last_src = r["source"]
-        flame = "🔥" if (r["score"] >= 6 or r["eng"] >= 100) else ("✨" if (r["score"] >= 3 or r["eng"] >= 30) else "▫️")
-        verdict = r["verdict"] or ""
-        if verdict == "BUILD":
-            b = r["buildability"] or 0
-            bcol = "#4ade80" if b >= 8 else ("#fbbf24" if b >= 5 else "#f87171")
-            tag = f'<span class="v build">🟢 BUILD <b style="color:{bcol}">{b}/10</b> · ~{r["ttm_days"]}d</span>'
-        elif verdict == "WATCH":
-            b = r["buildability"] or 0
-            bcol = "#4ade80" if b >= 8 else ("#fbbf24" if b >= 5 else "#94a3b8")
-            tag = f'<span class="v watch">🟡 WATCH <b style="color:{bcol}">{b}/10</b></span>'
-        elif verdict == "SKIP":
-            tag = '<span class="v skip">⚪ SKIP</span>'
-        elif verdict == "ERROR":
-            tag = f'<span class="v pending" title="{esc(r["reason"])}">⚠ eval failed, retrying</span>'
+    def qs(p=0, f=None, so=None):
+        return "/?page=%d&filter=%s&source=%s" % (p, f or filter, quote_url(so or source))
+
+    def plain_meta(r):
+        meta = re.sub(r"(\d+)\s*↑", r"\1 upvotes", (r["meta"] or "").replace(" · ", ", "))
+        meta = meta if len(meta) <= 120 else meta[:117].rstrip(" ,") + "…"
+        when = (r["fetched_on"] or "")[:10]
+        return ", ".join(x for x in (r["source"], meta, when and "fetched " + when) if x)
+
+    def actions(r, verdict):
+        acts = []
+        if r["report_path"]:
+            acts.append(f'<a href="/report/{r["id"]}" target="_blank">Full report</a>')
         else:
-            tag = '<span class="v pending">⏳ pending</span>'
-        what = f'<div class="what">→ {esc(r["what"])}</div>' if r["what"] else ""
-        why = f' — {esc(r["reason"])[:110]}' if verdict == "SKIP" and r["reason"] else ""
-        report = (f' <a class="report" href="/report/{r["id"]}" target="_blank">📋 full report</a>'
-                  if r["report_path"] else
-                  f' <a class="report" href="#" onclick="deepeval({r["id"]}); return false;">🔬 deep evaluate</a>')
-        report += f' <a class="report" href="#" onclick="simulate({r["id"]}); return false;">🎭 Simulate</a>'
-        report += f' <a class="report" href="#" onclick="explainIdea({r["id"]}); return false;">💬 explain</a>'
-        report += f' <a class="report" href="#" onclick="pitchIdea({r["id"]}); return false;">📤 pitch</a>'
+            acts.append(f'<button type="button" onclick="deepeval({r["id"]})">Deep evaluate</button>')
+        acts.append(f'<button type="button" onclick="explainIdea({r["id"]})">Explain</button>')
+        acts.append(f'<button type="button" onclick="pitchIdea({r["id"]})">Draft pitch</button>')
+        acts.append(f'<button type="button" onclick="simulate({r["id"]})">Simulate buyers</button>')
         if verdict in ("BUILD", "WATCH"):
-            report += f' <a class="report" href="/launch?product={r["id"]}">🚀 where to launch</a>'
-        ns = (f'<div class="nutshell" id="ns_{r["id"]}">💡 {esc(r["nutshell"])}</div>' if r["nutshell"]
-              else f'<div class="nutshell" id="ns_{r["id"]}"></div>')
-        ns += f'<div class="pitchbox" id="pitch_{r["id"]}" style="display:none"></div>'
-        cards += f"""<div class="card {verdict.lower() or ('hotpending' if flame == '🔥' else '')}">
-          <div class="t">{flame} <a class="tlink" href="{esc(r['url'])}" target="_blank">{esc(r['title'])}</a> {tag}</div>
-          {what}
-          {ns}
-          <div class="m">{esc(r['meta'])} · {esc(r['kind'])} · {esc(r['fetched_on'])}{why}{report}</div></div>"""
-    legend = """<div class="legend">
-      <span class="lg"><i style="background:#4ade80"></i> BUILD (go)</span>
-      <span class="lg"><i style="background:#fbbf24"></i> WATCH</span>
-      <span class="lg"><i style="background:#64748b"></i> SKIP</span>
-      <span class="lg"><i style="background:#f97316"></i> 🔥 hot, not yet evaluated</span>
-    </div>"""
+            acts.append(f'<a href="/launch?product={r["id"]}">Where to launch</a>')
+        return '<div class="acts">' + "".join(acts) + "</div>"
+
+    def score_line(r, verdict):
+        b = r["buildability"] or 0
+        days = r["ttm_days"]
+        if days in (None, ""):
+            ship = ""
+        elif int(days) <= 1:
+            ship = ", could ship within a day"
+        else:
+            ship = f", about {days} days to ship"
+        word = "Build" if verdict == "BUILD" else "Watch"
+        return (f'<p class="score"><span class="vw">{word}.</span> Buildable {b} of 10{ship}.'
+                f'<span class="ticks" aria-hidden="true">'
+                + "".join(f'<i class="{"on" if i < b else ""}"></i>' for i in range(10))
+                + "</span></p>")
+
+    entries = ""
+    for r in rows:
+        verdict = (r["verdict"] or "").upper()
+        title = (f'<a class="tl" href="{esc(r["url"])}" target="_blank" rel="noopener">'
+                 f'<mark>{esc(r["title"])}</mark></a>')
+        ns = (f'<p class="ns" id="ns_{r["id"]}">{esc(r["nutshell"])}</p>' if r["nutshell"]
+              else f'<p class="ns" id="ns_{r["id"]}" hidden></p>')
+        pitch = f'<div class="pitchbox" id="pitch_{r["id"]}" hidden></div>'
+        if verdict in ("BUILD", "WATCH"):
+            what = f'<p class="what">{esc(r["what"])}</p>' if r["what"] else ""
+            entries += (f'<article class="entry {verdict.lower()}"><h2>{title}</h2>{score_line(r, verdict)}'
+                        f'{what}{ns}{pitch}<p class="meta">{esc(plain_meta(r))}</p>{actions(r, verdict)}</article>')
+        else:
+            hot = (r["score"] or 0) >= 6 or (r["eng"] or 0) >= 100
+            if verdict == "SKIP":
+                note = f'<span class="why">Skipped: {esc((r["reason"] or "no reason given")[:120])}</span>'
+            elif verdict == "ERROR":
+                note = '<span class="why flag">Evaluation failed, will retry</span>'
+            else:
+                note = '<span class="why">Popular, not read yet</span>' if hot else ""
+            entries += (f'<article class="row {verdict.lower() or "unread"}"><h3>{title}</h3>'
+                        f'<p class="meta">{note}{esc(plain_meta(r))}</p>{ns}{pitch}'
+                        f'{actions(r, verdict)}</article>')
     if not rows:
-        cards = '<div class="empty">No items yet — hit "Fetch now".</div>'
-    legend = ""
+        entries = ('<div class="empty"><p>Nothing matches this view.</p>'
+                   f'<p><a href="{qs(0, "all", "all")}">Show every idea</a> or fetch new ones.</p></div>')
 
-    qs = lambda p, f=filter, so=source: f"/?page={p}&filter={f}&source={so}"
-    nav = '<div class="nav">'
-    if page > 0:
-        nav += f'<a href="{qs(page-1)}">← Newer</a>'
-    nav += f'<span class="pg">page {page+1} / {pages} · {total} items</span>'
-    if page < pages - 1:
-        nav += f'<a href="{qs(page+1)}">Older →</a>'
-    nav += "</div>"
+    # ---- sources rail: health and filter in one list --------------------------------
+    status_by = {st["source"]: st for st in src_status}
 
-    def chip(label, fval, count, emoji=""):
-        cls = "chip on" if filter == fval else "chip"
-        return f'<a class="{cls}" href="/?page=0&filter={fval}&source={source}">{emoji} {label} ({count})</a>'
+    def health(name):
+        st = status_by.get(name)
+        if not st:
+            return "", "not run yet"
+        s = st["status"] or ""
+        if s.startswith("ok"):
+            return "ok", f'+{st["count"]} at {st["last_run"]}'
+        if s.startswith("EMPTY"):
+            return "bad", "returned nothing"
+        if s.startswith("skipped"):
+            return "bad", "needs " + s.split("set ", 1)[-1] if "set " in s else s
+        return "bad", "failed"
+
+    names = sorted(set(source_counts) | set(status_by), key=str.lower)
+    problems = sum(1 for n in names if health(n)[0] == "bad")
+    rail_items = "".join(
+        f'<li class="{health(n)[0]}"><a href="{qs(0, None, n)}"{" aria-current=true" if source == n else ""}>'
+        f'<span class="sn">{esc(n)}</span><span class="sc">{source_counts.get(n, 0)}</span>'
+        f'<span class="sh">{esc(health(n)[1])}</span></a></li>'
+        for n in names)
+    rail = ('<aside class="rail"><details open id="srcs"><summary>Sources'
+            + (f' <span class="probs">{problems} need attention</span>' if problems else "")
+            + '</summary>'
+            + (f'<a class="allsrc" href="{qs(0, None, "all")}">Show all sources</a>' if source != "all" else "")
+            + f'<ul>{rail_items}</ul></details></aside>')
+
+    # ---- verdict tabs ---------------------------------------------------------------
     vcounts = {"BUILD": counts.get("BUILD", 0), "WATCH": counts.get("WATCH", 0),
-               "SKIP": counts.get("SKIP", 0), "pending": counts.get(None, 0) + counts.get("", 0) + counts.get("ERROR", 0)}
-    allcount = sum(counts.values())
-    filters_ui = ('<div class="chips">'
-                  + chip("All", "all", allcount)
-                  + chip("🟢 BUILD", "build", vcounts["BUILD"])
-                  + chip("🟡 WATCH", "watch", vcounts["WATCH"])
-                  + chip("⏳ Pending", "pending", vcounts["pending"])
-                  + chip("⚪ SKIP", "skip", vcounts["SKIP"])
-                  + chip("💎 Live only", "live", vcounts["BUILD"] + vcounts["WATCH"])
-                  + "</div>")
-    filters_ui += ('<div class="chips">'
-                   + f'<a class="chip {"on" if source == "all" else ""}" href="/?page=0&filter={filter}&source=all">All sources</a>'
-                   + "".join(f'<a class="chip {"on" if source == so else ""}" href="/?page=0&filter={filter}&source={so.replace(" ", "%20")}">{so}</a>'
-                             for so in sources)
-                   + "</div>")
-    filters_ui += ('<div class="srcstat">'
-                   + "".join(f'<span class="ss {"bad" if any(w in st["status"] for w in ("FAIL", "EMPTY", "skipped")) else ""}">'
-                             f'{st["source"][:28]}: {st["status"]} (+{st["count"]} @ {st["last_run"]})</span>'
-                             for st in src_status)
-                   + "</div>")
+               "SKIP": counts.get("SKIP", 0),
+               "pending": counts.get(None, 0) + counts.get("", 0) + counts.get("ERROR", 0)}
+    tab_defs = [("build", "Build", vcounts["BUILD"]), ("watch", "Watch", vcounts["WATCH"]),
+                ("live", "Build and watch", vcounts["BUILD"] + vcounts["WATCH"]),
+                ("pending", "Not read yet", vcounts["pending"]), ("skip", "Skipped", vcounts["SKIP"]),
+                ("all", "All", sum(counts.values()))]
+    tabs = "".join(f'<a class="tab" href="{qs(0, f)}"{" aria-current=page" if filter == f else ""}>'
+                   f'{label} ({n:,})</a>' for f, label, n in tab_defs)
 
-    return (HTML_TEMPLATE.replace("{{CARDS}}", cards).replace("{{NAV}}", nav)
-            .replace("{{COUNT}}", str(today_count)).replace("{{TOTAL}}", str(total))
-            .replace("{{FILTERS}}", filters_ui).replace("{{LEGEND}}", legend).replace("{{DATE}}", today)
+    pager = '<nav class="pager" aria-label="Pages">'
+    if page > 0:
+        pager += f'<a href="{qs(page - 1)}">Newer</a>'
+    pager += f'<span>Page {page + 1} of {pages}, {total:,} ideas</span>'
+    if page < pages - 1:
+        pager += f'<a href="{qs(page + 1)}">Older</a>'
+    pager += "</nav>"
+
+    view = ("" if source == "all"
+            else f'<p class="viewing">Only ideas from <b>{esc(source)}</b>. '
+                 f'<a href="{qs(0, None, "all")}">Show all sources</a></p>')
+    def are(n):
+        return f"{n:,} is" if n == 1 else f"{n:,} are"
+    lede = (f'{today_count:,} new idea{"" if today_count == 1 else "s"} came in today. '
+            f'{are(vcounts["BUILD"])} worth building and {vcounts["WATCH"]:,} worth watching; '
+            f'{vcounts["pending"]:,} {"hasn’t" if vcounts["pending"] == 1 else "haven’t"} been read yet.')
+    day = datetime.now().strftime("%A %-d %B")
+
+    return (HTML_TEMPLATE.replace("{{ENTRIES}}", entries).replace("{{PAGER}}", pager)
+            .replace("{{LEDE}}", esc(lede)).replace("{{DAY}}", day)
+            .replace("{{TABS}}", tabs).replace("{{RAIL}}", rail).replace("{{VIEW}}", view)
             .replace("{{JOBBAR}}", __import__("jobs").WIDGET)
             .replace("{{DEMO_LINK}}", json.dumps(demo_link() or "(demo link coming)")))
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>IdeaPulse — daily trending ideas</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IdeaPulse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>
+:root{
+  --ground:#141c23; --surface:#1a242d; --rule:#25313b;
+  --ink:#e8e2d4; --muted:#8b979f; --faint:#5d6b75;
+  --mark:#f0c64a; --mark-bg:rgba(240,198,74,.22); --rival:#7fa8d6; --flag:#e48a78;
+  --serif:'Newsreader',Georgia,'Times New Roman',serif;
+  --sans:'Atkinson Hyperlegible',-apple-system,'Segoe UI',sans-serif;
+}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:28px;max-width:860px;margin:0 auto}
-h1{font-size:26px;font-weight:800}
-.sub{color:#667781;font-size:13px;margin:6px 0 20px}
-.bar{display:flex;gap:10px;margin-bottom:18px}
-button{background:#008069;color:#fff;border:none;border-radius:20px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer}
-button:hover{background:#00a884}
-.stats{color:#667781;font-size:12.5px;align-self:center;margin-left:auto}
-.src{color:#4a6270;font-size:12px;letter-spacing:2px;text-transform:uppercase;margin:22px 0 8px;text-align:center}
-.card{display:block;background:#111b21;border:1px solid #1d2a33;border-radius:12px;padding:14px 16px;margin-bottom:8px;text-decoration:none;color:inherit;transition:border .15s}
-.card:hover{border-color:#00a884}
-.t{font-size:15px;line-height:1.4;font-weight:500}
-.m{color:#667781;font-size:12px;margin-top:5px}
-.empty{color:#667781;text-align:center;padding:60px 0}
-.nav{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0}
-.navout{color:#fbbf24;font-size:15px;text-decoration:none;margin-left:14px;font-weight:600}
-.nav a{color:#4ade80;text-decoration:none;font-size:14px;font-weight:600}
-.nav a:hover{text-decoration:underline}
-.pg{color:#667781;font-size:13px}
-.v{font-size:11px;padding:2px 8px;border-radius:10px;margin-left:8px;vertical-align:middle;background:#1d2a33;color:#667781;font-weight:700;white-space:nowrap}
-.v.build{background:#052e1b;color:#4ade80;border:1px solid #14532d}
-.v.watch{background:#2e2605;color:#fbbf24;border:1px solid #713f12}
-.v.skip{background:#1d2a33;color:#94a3b8}
-.what{color:#93c5fd;font-size:12.5px;margin-top:5px}
-.card.build{border-left:4px solid #4ade80;background:#0a1f16}
-.card.watch{border-left:4px solid #fbbf24;background:#171405}
-.card.skip{opacity:.4;border-left:4px solid #334155}
-.card.hotpending{border-left:4px solid #f97316}
-.nutshell{color:#a7f3d0;font-size:12.5px;margin-top:6px;background:#0a1f16;border-left:3px solid #10b981;padding:6px 10px;border-radius:6px;line-height:1.45}
-.pitchbox{color:#fde68a;font-size:12.5px;margin-top:6px;background:#171405;border-left:3px solid #f59e0b;padding:6px 10px;border-radius:6px;line-height:1.5;white-space:pre-wrap}
-.tlink{color:inherit;text-decoration:none}
-.tlink:hover{color:#4ade80}
-.report{color:#a78bfa;font-size:11.5px;margin-left:8px;text-decoration:none}
-.report:hover{text-decoration:underline}
-.srcstat{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 10px}
-.ss{color:#4a6270;font-size:10.5px;background:#111b21;border:1px solid #1d2a33;border-radius:8px;padding:3px 9px}
-.ss.bad{color:#f87171;border-color:#3f1d1d}
-.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-.chip{color:#8fa3ad;text-decoration:none;font-size:12.5px;padding:6px 14px;border-radius:16px;border:1px solid #1d2a33;background:#111b21}
-.chip:hover{border-color:#00a884;color:#e9edef}
-.chip.on{background:#008069;color:#fff;border-color:#008069;font-weight:600}
-.legend{display:flex;gap:16px;justify-content:center;margin:4px 0 14px;flex-wrap:wrap}
-.lg{color:#667781;font-size:11.5px;display:flex;align-items:center;gap:5px}
-.lg i{width:10px;height:10px;border-radius:3px;display:inline-block}
-#status{color:#4ade80;font-size:13px;margin-left:12px;align-self:center}
+body{background:var(--ground);color:var(--ink);font:16px/1.55 var(--sans);
+  padding:40px 32px 90px;max-width:1160px;margin:0 auto}
+a{color:inherit}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--mark);outline-offset:3px;border-radius:2px}
+[hidden]{display:none!important}
+
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px 20px;flex-wrap:wrap}
+h1{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}
+.links{display:flex;flex-wrap:wrap;gap:4px 18px}
+.links a{color:var(--muted);text-decoration:none;font-size:14px;white-space:nowrap}
+.links a:hover{color:var(--ink)}
+.day{color:var(--muted);font-size:14px;margin-top:18px}
+.lede{font:400 23px/1.4 var(--serif);max-width:34em;margin:4px 0 0;text-wrap:balance}
+
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 0}
+.bar button{font:700 14px/1 var(--sans);border-radius:6px;padding:11px 18px;cursor:pointer;
+  border:1px solid var(--ink);background:var(--ink);color:var(--ground)}
+.bar button.second{background:transparent;color:var(--ink);border-color:var(--faint)}
+.bar button:hover{opacity:.88}
+#status{color:var(--muted);font-size:14px;margin-left:6px}
+
+.tabs{display:flex;gap:8px 22px;flex-wrap:wrap;margin:34px 0 0;border-bottom:1px solid var(--rule)}
+.tab{color:var(--muted);text-decoration:none;font-size:15px;padding:0 0 10px;margin-bottom:-1px;
+  border-bottom:2px solid transparent;white-space:nowrap}
+.tab:hover{color:var(--ink)}
+.tab[aria-current]{color:var(--ink);border-bottom-color:var(--ink);font-weight:700}
+
+.layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:56px;margin-top:34px}
+.rail summary{font:700 13px/1.3 var(--sans);color:var(--muted);cursor:pointer;list-style:none;margin-bottom:10px}
+.rail summary::-webkit-details-marker{display:none}
+.probs{color:var(--flag);font-weight:400;margin-left:4px}
+.rail ul{list-style:none}
+.rail li a{display:grid;grid-template-columns:1fr auto;column-gap:10px;text-decoration:none;padding:7px 0;
+  border-bottom:1px solid var(--rule)}
+.rail .sn{font-size:14px}
+.rail .sc{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.rail .sh{grid-column:1/-1;color:var(--faint);font-size:12.5px}
+.rail li.bad .sh{color:var(--flag)}
+.rail li a:hover .sn,.rail li a[aria-current] .sn{color:var(--mark)}
+.rail li a[aria-current] .sn{font-weight:700}
+.allsrc{display:inline-block;font-size:13px;color:var(--muted);margin-bottom:8px}
+
+.viewing{color:var(--muted);font-size:14px;margin-bottom:22px}
+.viewing b{color:var(--ink)}
+.entry{max-width:66ch;padding:0 0 30px;margin-bottom:30px;border-bottom:1px solid var(--rule)}
+.entry h2{font:500 23px/1.35 var(--serif)}
+.tl{text-decoration:none}
+.tl mark{color:var(--ink);background:none;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.entry.build .tl mark{background:linear-gradient(transparent 55%,var(--mark-bg) 55%)}
+.entry.watch .tl mark{text-decoration:underline 2px var(--rival);text-underline-offset:5px}
+.tl:hover mark{color:#fff}
+.score{font-size:14.5px;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap}
+.vw{font-weight:700}
+.entry.build .vw{color:var(--mark)} .entry.watch .vw{color:var(--rival)}
+.ticks{display:inline-flex;gap:3px}
+.ticks i{width:7px;height:12px;border-radius:1px;background:var(--rule)}
+.entry.build .ticks i.on{background:var(--mark)}
+.entry.watch .ticks i.on{background:var(--rival)}
+.what{font:400 18px/1.5 var(--serif);margin-top:10px}
+.ns{font-size:15px;color:var(--ink);margin-top:10px;max-width:62ch}
+.pitchbox{font-size:14.5px;margin-top:12px;background:var(--surface);border-radius:6px;padding:12px 14px;
+  white-space:pre-wrap;max-width:62ch}
+.pitchbox .report{color:var(--mark);margin-right:14px;font-size:14px}
+.meta{color:var(--faint);font-size:13.5px;margin-top:10px}
+.acts{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:10px}
+.acts a,.acts button{font:14px/1.6 var(--sans);color:var(--muted);background:none;border:0;padding:0;cursor:pointer;
+  text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:3px}
+.acts a:hover,.acts button:hover{color:var(--ink);text-decoration-color:var(--ink)}
+
+.row{max-width:66ch;padding:12px 0;border-bottom:1px solid var(--rule)}
+.row h3{font:400 17px/1.4 var(--serif)}
+.row .meta{margin-top:3px}
+.row .acts{display:none}
+.row:hover .acts,.row:focus-within .acts{display:flex}
+.row.skip h3{color:var(--muted)}
+.why{color:var(--muted);margin-right:8px}
+.why::after{content:"."}
+.why.flag{color:var(--flag)}
+
+.pager{display:flex;gap:22px;align-items:center;margin:34px 0 0;font-size:14px;color:var(--muted)}
+.pager a{color:var(--ink)}
+.empty{color:var(--muted);padding:30px 0}
+.empty p+p{margin-top:8px}
+
+@media (max-width:860px){
+  body{padding:24px 16px 80px}
+  h1{font-size:34px}
+  .lede{font-size:19px}
+  .layout{grid-template-columns:1fr;gap:18px;margin-top:20px}
+  .rail details:not([open]) summary{margin-bottom:0}
+  .rail summary{text-decoration:underline dotted var(--faint);text-underline-offset:4px}
+  .rail details:not([open]) summary::after{content:", show";font-weight:400}
+  .entry h2{font-size:20px}
+  .row .acts{display:flex}
+}
 </style></head>
 <body>
-<h1>⚡ IdeaPulse</h1> <a class="navout" href="/money">💰 First currency</a> <a class="navout" href="/launch">🚀 Launch dirs</a> <a class="navout" href="/outreach">📤 Outreach</a> <a class="navout" href="/pains">🩹 Pains</a>
-<div class="sub">Daily trending app/SaaS ideas — Show HN, GitHub, Reddit requests, Product Hunt · {{DATE}}</div>
+<header>
+  <h1>IdeaPulse</h1>
+  <nav class="links"><a href="/pains">Pains</a><a href="/money">First customer</a><a href="/launch">Launch directories</a><a href="/outreach">Outreach</a></nav>
+</header>
+<p class="day">{{DAY}}</p>
+<p class="lede">{{LEDE}}</p>
 <div class="bar">
-  <button onclick="fetchNow()">↻ Fetch now</button>
-  <button onclick="evalNow()" style="background:#7c3aed">⚡ Evaluate new</button>
-  <span id="status"></span>
-  <span class="stats">{{COUNT}} today · {{TOTAL}} total</span>
+  <button type="button" onclick="fetchNow()">Fetch new ideas</button>
+  <button type="button" class="second" onclick="evalNow()">Evaluate 25 more</button>
+  <span id="status" role="status"></span>
 </div>
-{{FILTERS}}<div id="feed">{{LEGEND}}{{CARDS}}</div>
+<nav class="tabs" aria-label="Filter by verdict">{{TABS}}</nav>
+<div class="layout">
+{{RAIL}}
+<main>{{VIEW}}{{ENTRIES}}{{PAGER}}</main>
+</div>
 {{JOBBAR}}
 <script>
-async function fetchNow(){
+if (matchMedia('(max-width:860px)').matches) { const d = document.getElementById('srcs'); if (d) d.open = false; }
+function say(text, tone){
   const s = document.getElementById('status');
-  s.textContent = 'fetching…'; s.style.color = '#667781';
+  s.textContent = text;
+  s.style.color = tone === 'bad' ? 'var(--flag)' : (tone === 'good' ? 'var(--ink)' : 'var(--muted)');
+}
+async function fetchNow(){
+  say('Fetching new ideas…');
   const r = await (await fetch('/fetch?async_=1')).json();
   JobBar.watch(r.job, async (j) => {
-    s.textContent = j.result || 'fetch complete';
-    s.style.color = '#4ade80';
+    if (j.state !== 'done') { say('Fetch failed: ' + (j.message || 'unknown error'), 'bad'); return; }
+    say((j.result || 'Fetched') + '. Evaluating the newest 15…', 'good');
     await fetch('/evaluate?async_=1&limit=15');
     setTimeout(() => location.reload(), 1200);
   });
 }
+async function evalNow(){
+  say('Evaluating 25 ideas…');
+  const r = await (await fetch('/evaluate?async_=1&limit=25')).json();
+  JobBar.watch(r.job, (j) => {
+    const ok = j.state === 'done';
+    say(ok ? 'Evaluated. Reloading…' : 'Evaluation failed: ' + (j.message || ''), ok ? 'good' : 'bad');
+    if (ok) setTimeout(() => location.reload(), 1200);
+  });
+}
 async function explainIdea(id){
   const box = document.getElementById('ns_' + id);
-  if (box.textContent) { box.style.display = box.style.display === 'none' ? 'block' : 'none'; return; }
-  box.textContent = '💡 thinking…';
+  if (box.textContent) { box.hidden = !box.hidden; return; }
+  box.hidden = false;
+  box.textContent = 'Writing a plain explanation…';
   const r = await (await fetch('/explain/' + id)).json();
-  box.textContent = r.nutshell.startsWith('explanation failed') ? '💡 ' + r.nutshell : '💡 ' + r.nutshell;
+  box.textContent = r.nutshell;
 }
 async function deepeval(id){
-  const s = document.getElementById('status');
-  s.textContent = ''; s.style.color = '#667781';
+  say('Running a deep evaluation…');
   const r = await (await fetch('/deepeval/' + id + '?async_=1')).json();
   JobBar.watch(r.job, (j) => {
     const ok = j.state === 'done';
-    s.textContent = ok ? 'report saved — reloading' : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#a78bfa' : '#f87171';
+    say(ok ? 'Report saved. Reloading…' : 'Deep evaluation failed: ' + (j.message || ''), ok ? 'good' : 'bad');
     if (ok) setTimeout(() => location.reload(), 1500);
   });
 }
 async function simulate(id){
-  const s = document.getElementById('status');
-  s.textContent = 'simulating reactions (~6-10 min)'; s.style.color = '#667781';
+  say('Simulating buyer reactions, about 6 to 10 minutes…');
   const r = await (await fetch('/simulate/' + id + '?async_=1')).json();
-  if (r.status === 'existing') {
-    s.textContent = 'report already exists - opening';
-    s.style.color = '#a78bfa';
-    location.href = '/simulation/' + id;
-    return;
-  }
-  if (!r.job) {
-    s.textContent = 'failed - ' + (r.error || 'could not start');
-    s.style.color = '#f87171';
-    return;
-  }
+  if (r.status === 'existing') { say('Opening the saved simulation…', 'good'); location.href = '/simulation/' + id; return; }
+  if (!r.job) { say('Simulation could not start: ' + (r.error || 'unknown error'), 'bad'); return; }
   JobBar.watch(r.job, (j) => {
-    if (j.state === 'done') {
-      s.textContent = 'simulation saved - opening';
-      s.style.color = '#a78bfa';
-      location.href = '/simulation/' + id;
-    } else if (j.state === 'error') {
-      s.textContent = 'failed - ' + (j.message || '');
-      s.style.color = '#f87171';
-    } else {
-      s.textContent = j.label || 'simulating...';
-    }
+    if (j.state === 'done') { say('Simulation saved. Opening…', 'good'); location.href = '/simulation/' + id; }
+    else if (j.state === 'error') { say('Simulation failed: ' + (j.message || ''), 'bad'); }
+    else { say(j.label || 'Simulating…'); }
   });
 }
 const DEMO_LINK = {{DEMO_LINK}};
@@ -1551,50 +1654,29 @@ function filledPitch(p){
 }
 async function pitchIdea(id){
   const box = document.getElementById('pitch_' + id);
-  if (box.dataset.done) { box.style.display = box.style.display === 'none' ? 'block' : 'none'; return; }
-  box.style.display = 'block';
-  box.textContent = '📤 drafting pitch… (~10s)';
+  if (box.dataset.done) { box.hidden = !box.hidden; return; }
+  box.hidden = false;
+  box.textContent = 'Drafting a pitch, about 10 seconds…';
   const r = await (await fetch('/pitch/' + id)).json();
-  if (!r.pitch) { box.textContent = '📤 pitch failed — ' + r.status; return; }
+  if (!r.pitch) { box.textContent = 'Pitch failed: ' + r.status; return; }
   const msg = filledPitch(r.pitch);
-  box.textContent = '📤 ' + msg;
+  box.textContent = msg;
   const bar = document.createElement('div');
-  bar.style.marginTop = '6px';
-  const cp = document.createElement('a'); cp.href = '#'; cp.className = 'report'; cp.textContent = 'copy';
-  cp.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(msg); cp.textContent = 'copied ✓';
-    setTimeout(()=>cp.textContent = 'copy', 1200); };
-  const wa = document.createElement('a'); wa.className = 'report'; wa.target = '_blank'; wa.textContent = 'WhatsApp';
+  bar.style.marginTop = '10px';
+  const cp = document.createElement('a'); cp.href = '#'; cp.className = 'report'; cp.textContent = 'Copy';
+  cp.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(msg); cp.textContent = 'Copied';
+    setTimeout(() => cp.textContent = 'Copy', 1200); };
+  const wa = document.createElement('a'); wa.className = 'report'; wa.target = '_blank'; wa.textContent = 'Open in WhatsApp';
   wa.href = 'https://wa.me/?text=' + encodeURIComponent(msg);
-  const out = document.createElement('a'); out.className = 'report'; out.textContent = 'open in Outreach';
+  const out = document.createElement('a'); out.className = 'report'; out.textContent = 'Add to Outreach';
   out.href = '/outreach?prefill=' + id;
-  bar.append(' ', cp, ' ', wa, ' ', out);
+  bar.append(cp, wa, out);
   box.appendChild(bar);
   box.dataset.done = 1;
 }
-async function evalNow(){
-  const s = document.getElementById('status');
-  s.textContent = ''; s.style.color = '#667781';
-  const r = await (await fetch('/evaluate?async_=1&limit=25')).json();
-  JobBar.watch(r.job, (j) => {
-    const ok = j.state === 'done';
-    s.textContent = ok ? 'evaluated — reloading' : ('failed — ' + (j.message || ''));
-    s.style.color = ok ? '#a78bfa' : '#f87171';
-    if (ok) setTimeout(() => location.reload(), 1200);
-  });
-}
-</script>
-{{NAV}}
-<script>
-async function fetchNow(){
-  const s = document.getElementById('status');
-  s.textContent = 'fetching…'; s.style.color = '#667781';
-  const r = await (await fetch('/fetch')).json();
-  s.textContent = '+' + r.new_items + ' new · ' + r.sources.join(' · ');
-  s.style.color = '#4ade80';
-  setTimeout(()=>location.reload(), 1200);
-}
 </script>
 </body></html>"""
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "fetch":
