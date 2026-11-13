@@ -872,9 +872,21 @@ def out_status(pid: int, st: str):
     return RedirectResponse("/outreach", status_code=303)
 
 
+async def _form_fields(request):
+    """A urlencoded form as {name: value}.
+
+    Not request.form(): that needs python-multipart, which the server's Python
+    (/usr/bin/python3, run by launchd) does not have, so every form post failed
+    with a 500 there while passing in the test venv.
+    """
+    from urllib.parse import parse_qs
+    body = (await request.body()).decode("utf-8", "replace")
+    return {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
+
+
 @app.post("/outreach/add")
 async def outreach_add(request: Request):
-    f = await request.form()
+    f = await _form_fields(request)
     conn = out_db()
     conn.execute("INSERT INTO prospects (created,name,business,phone,status,template,followup,notes) VALUES (?,?,?,?,?,?,?,?)",
                  (datetime.now().strftime("%Y-%m-%d %H:%M"), f.get("name", ""), f.get("business", ""),
