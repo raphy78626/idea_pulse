@@ -1145,43 +1145,49 @@ def _report_complete(md):
 
 
 REPORT_PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Full report — IdeaPulse</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+{{FONTS}}
 <style>
-*{box-sizing:border-box}
-body{background:#0b141a;color:#e9edef;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;padding:32px 24px 80px;line-height:1.7;max-width:880px;margin:0 auto;font-size:16px}
-h1{font-size:26px;line-height:1.3;margin:14px 0 6px}
-h2{color:#4ade80;font-size:20px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid #1d2a33}
-h3{color:#93c5fd;font-size:17px;margin:22px 0 8px}
-p{margin:10px 0}ul,ol{margin:10px 0 10px 24px}li{margin:6px 0}
-b{color:#fff}i{color:#a7f3d0}a{color:#4ade80}
-code{background:#111b21;border:1px solid #1d2a33;border-radius:5px;padding:1px 6px;font-size:14px;color:#fbbf24}
-.code{background:#111b21;border:1px solid #1d2a33;border-radius:8px;padding:14px;overflow-x:auto;font-size:14px;white-space:pre-wrap}
-blockquote{border-left:3px solid #10b981;background:#0a1f16;margin:12px 0;padding:10px 14px;border-radius:6px;color:#d1fae5}
-hr{border:none;border-top:1px solid #1d2a33;margin:22px 0}
-.tbl{overflow-x:auto;margin:14px 0;border:1px solid #1d2a33;border-radius:10px}
-table{border-collapse:collapse;width:100%;font-size:14.5px}
-th{background:#13232c;color:#93c5fd;text-align:left;font-weight:600;padding:10px 12px;border-bottom:1px solid #22343f}
-td{padding:10px 12px;border-top:1px solid #1d2a33;vertical-align:top}
-tbody tr:nth-child(even) td{background:#0f1a20}
-.meta{color:#8fa3ad;font-size:13.5px}
-.back{color:#4ade80;text-decoration:none;font-size:14px}
-.warn{background:#2a1d05;border:1px solid #713f12;color:#fde68a;border-radius:10px;padding:12px 16px;margin:16px 0;font-size:14.5px}
-.warn button{background:#f59e0b;color:#111;border:none;border-radius:16px;padding:6px 16px;font-weight:700;cursor:pointer;margin-left:8px}
-@media (max-width:640px){
-  body{padding:18px 14px 60px;font-size:15.5px}
-  h1{font-size:21px}
+{{THEME_CSS}}
+.doc{max-width:68ch;margin-top:40px;font-size:17px;line-height:1.7}
+.doc h1{font:500 38px/1.15 var(--serif);letter-spacing:-.01em;margin:0 0 10px;text-wrap:balance}
+.doc h2{font:500 26px/1.25 var(--serif);margin:44px 0 12px}
+.doc h3{font-size:17px;font-weight:700;margin:26px 0 8px}
+.doc p{margin:0 0 14px}
+.doc ul,.doc ol{margin:0 0 14px 24px}
+.doc li{margin:6px 0}
+.doc b,.doc strong{color:#fff}
+.doc a{color:var(--ink);text-decoration-color:var(--faint);text-underline-offset:3px}
+.doc blockquote{font:italic 400 18px/1.6 var(--serif);color:var(--ink);border-left:2px solid var(--rule);
+  margin:16px 0;padding:2px 0 2px 18px}
+.doc hr{border:none;border-top:1px solid var(--rule);margin:30px 0}
+.doc code{background:var(--surface);border-radius:4px;padding:1px 6px;font-size:15px;color:var(--ink)}
+.doc .code{background:var(--surface);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:14px;white-space:pre-wrap;margin:0 0 14px}
+.doc .meta{color:var(--muted);font-size:14.5px;margin:0 0 24px}
+.tbl{overflow-x:auto;margin:16px 0 20px;max-width:none}
+.doc table{border-collapse:collapse;width:100%;font-size:15px;line-height:1.5}
+.doc th{text-align:left;color:var(--muted);font-weight:700;padding:8px 14px 8px 0;border-bottom:1px solid var(--faint)}
+.doc td{padding:10px 14px 10px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+.warn{border-left:3px solid var(--flag);padding:6px 0 6px 14px;margin:16px 0 26px;font-size:15px}
+.warn button{font:700 14px/1 var(--sans);border-radius:6px;padding:9px 14px;cursor:pointer;margin-left:10px;
+  border:1px solid var(--ink);background:var(--ink);color:var(--ground)}
+@media (max-width:860px){
+  .doc{margin-top:26px;font-size:16px}
+  .doc h1{font-size:28px}
+  .doc h2{font-size:22px}
+  .doc blockquote{font-size:17px}
   .tbl{border:none}
-  table,thead,tbody,tr,td{display:block;width:100%}
-  thead{display:none}
-  tr{border:1px solid #1d2a33;border-radius:10px;margin-bottom:10px;overflow:hidden}
-  td{border-top:1px solid #1d2a33;background:none!important}
-  td:first-child{border-top:none;background:#13232c!important;font-weight:600}
-  td[data-label]:not(:first-child)::before{content:attr(data-label);display:block;color:#93c5fd;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+  .doc table,.doc thead,.doc tbody,.doc tr,.doc td{display:block;width:100%}
+  .doc thead{display:none}
+  .doc tr{border-bottom:1px solid var(--rule);padding:8px 0}
+  .doc td{border:none;padding:3px 0}
+  .doc td:first-child{font-weight:700}
+  .doc td[data-label]:not(:first-child)::before{content:attr(data-label);display:block;color:var(--muted);font-size:13px}
 }
 </style></head><body>
-<a class="back" href="/">← back to dashboard</a>
-{{BODY}}
+{{TOPBAR}}
+<article class="doc">{{BODY}}</article>
 <script>
 async function regen(id, btn){
   btn.disabled = true;
@@ -1197,6 +1203,20 @@ async function regen(id, btn){
 </body></html>"""
 
 
+def _report_page(body, title, status_code=200):
+    """A report (deep evaluation or simulation) in the shared look."""
+    import theme
+    return HTMLResponse(REPORT_PAGE.replace("{{FONTS}}", theme.FONTS).replace("{{THEME_CSS}}", theme.CSS)
+                        .replace("{{TOPBAR}}", theme.topbar()).replace("{{TITLE}}", theme.esc(title))
+                        .replace("{{BODY}}", body).replace("{{JOBBAR}}", __import__("jobs").WIDGET),
+                        status_code=status_code)
+
+
+def _missing_report(what, how):
+    return _report_page(f'<h1>{what}</h1><p>{how}</p><p><a href="/">Back to Ideas</a></p>',
+                        what + " — IdeaPulse", status_code=404)
+
+
 @app.get("/report/{item_id}", response_class=HTMLResponse)
 def report(item_id: int):
     conn = db(); conn.row_factory = sqlite3.Row
@@ -1209,15 +1229,15 @@ def report(item_id: int):
         except Exception:
             pass
     if not md:
-        return HTMLResponse('<p style="font-family:sans-serif;padding:30px">Report not available — run 🔬 deep evaluate first.</p>', status_code=404)
+        return _missing_report("No full report yet",
+                               "Open the idea on the Ideas page and choose Deep evaluate to write one.")
     body = _md_to_html(md)
     body = re.sub(r"<p><i>(Source:.*?)</i></p>", r'<p class="meta">\1</p>', body, count=1)
     if not _report_complete(md):
-        warn = (f'<div class="warn">⚠ This report was cut off before the end (the model ran out of space).'
+        warn = (f'<div class="warn">This report stops before the end: the model ran out of space.'
                 f'<button onclick="regen({item_id}, this)">Regenerate full report</button></div>')
         body = re.sub(r"(</h1>)", r"\1" + warn.replace("\\", "\\\\"), body, count=1)
-    return HTMLResponse(REPORT_PAGE.replace("{{BODY}}", body)
-                        .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
+    return _report_page(body, "Full report — IdeaPulse")
 
 
 @app.get("/simulation/{item_id}", response_class=HTMLResponse)
@@ -1227,13 +1247,13 @@ def simulation_report(item_id: int):
     conn.close()
     md = mirofish_bridge.read_report(row["sim_path"]) if row and row["sim_path"] else ""
     if not md:
-        return HTMLResponse(
-            '<p style="font-family:sans-serif;padding:30px">No reaction simulation yet '
-            '— run 🎭 simulate first.</p>', status_code=404)
+        return _missing_report("No simulation yet",
+                               "Open the idea on the Ideas page and choose Simulate buyers. "
+                               "A run takes about 6 to 11 minutes.")
     # MiroFish titles its output "Future Forecast Report" and writes in the future
     # tense, but it is a simulated reaction, not a forecast, and no time-series
     # model is involved. Retitle so the page does not overclaim.
-    md = _retitle_simulation(md, (row["title"] or "")[:110] if row else "")
+    md = _retitle_simulation(md, (row["title"] or "") if row else "")
     body = _md_to_html(md)
     # Plain-language explainer first: what this is, who took part, what it cannot tell you.
     intro = ""
@@ -1243,9 +1263,10 @@ def simulation_report(item_id: int):
                                    ((row["what"] or "") + " " + (row["title"] or "")) if row else "")
     except Exception:
         intro = ""
-    body = intro + body
-    return HTMLResponse(REPORT_PAGE.replace("{{BODY}}", body)
-                        .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
+    # Heading and "for:" line first, then the plain-language explainer, then the report.
+    body = re.sub(r"</h1>\s*(<p><i>Simulated reaction for:.*?</i></p>)?",
+                  lambda m: m.group(0) + intro, body, count=1)
+    return _report_page(body, "Simulation — IdeaPulse")
 
 
 def _retitle_simulation(md, idea_title=""):
@@ -1258,9 +1279,9 @@ def _retitle_simulation(md, idea_title=""):
     first, _, rest = (md or "").partition("\n")
     if not first.startswith("#"):
         return md
-    heading = ("# Reaction simulation — how the market responded\n\n"
+    heading = ("# How the personas reacted\n\n"
                f"*Simulated reaction for: {idea_title}*" if idea_title
-               else "# Reaction simulation — how the market responded")
+               else "# How the personas reacted")
     return heading + ("\n" + rest if rest else "")
 
 

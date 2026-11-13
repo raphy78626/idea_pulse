@@ -65,6 +65,9 @@ _ABSTRACT_NOUNS = {
     "skepticism", "resistance", "trust", "loyalty", "retention", "churn",
     "compliance", "complexity", "ambiguity", "uncertainty", "vulnerability",
     "exposure", "leverage", "incentive", "alignment", "dependence",
+    # money and metric words: "**Earnings**" was listed as a participant on a real run
+    "earnings", "revenue", "income", "profit", "profits", "sales", "installs",
+    "downloads", "users", "costs", "cost", "pricing", "margin", "margins", "valuation",
 }
 
 # Multi-word concept labels: "Platform affinity", "Silent enforcement",
@@ -357,12 +360,14 @@ def render(report, idea_title="", idea_what=""):
         warn = ('<p class="sx-warn">The report below says things like “X <i>will</i> do Y”. '
                 'Read that as “in this one role-play, X did Y”. Nobody measured real buyers.</p>')
 
+    n = len(e["cast"])
+    who = f", {n} named participant{'' if n == 1 else 's'}" if n else ""
     return f"""
 <section class="sx">
   <p class="sx-lede">This is a rehearsal, not a forecast.</p>
   <p>MiroFish gave AI personas your idea and let them act out how buyers, rivals and critics
-  might react. Below is what they did in one run: {e['words']:,} words, {len(e['cast'])} named
-  participants. No TimesFM or other forecasting model was used, and no real person was asked.
+  might react. Below is what they did in one run ({e['words']:,} words{who}).
+  No TimesFM or other forecasting model was used, and no real person was asked.
   <a href="/simulations">How simulations work, with real examples</a></p>
 
   <div class="sx-check {v['kind']}">

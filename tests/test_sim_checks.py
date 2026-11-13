@@ -116,6 +116,11 @@ def test_intro_shows_the_check_and_links_the_guide():
     assert "simulated personas, not real" in html.lower()
 
 
+def test_money_words_are_not_participants():
+    cast = sim_explain.extract_cast("**Earnings** rose. **AdMob** paid out. **Revenue** grew.")
+    assert "Earnings" not in cast and "Revenue" not in cast and "AdMob" in cast
+
+
 # ---- the Simulate button must not write into the repo ----------------------------
 
 def test_simulate_route_saves_into_eval_dir(tmp_path, monkeypatch):

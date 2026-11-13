@@ -44,6 +44,8 @@ a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,s
 
 .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px 20px;flex-wrap:wrap}
 .top h1{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}
+.top.slim{padding-bottom:16px;border-bottom:1px solid var(--rule)}
+.brand{font:500 24px/1.1 var(--serif);text-decoration:none}
 .links{display:flex;flex-wrap:wrap;gap:4px 18px}
 .links a{color:var(--muted);text-decoration:none;font-size:14px;white-space:nowrap}
 .links a:hover{color:var(--ink)}
@@ -119,6 +121,15 @@ def header(current, title):
         f'<a href="{path}"{" aria-current=page" if key == current else ""}>{label}</a>'
         for key, path, label in PAGES)
     return f'<header class="top"><h1>{esc(title)}</h1><nav class="links" aria-label="Pages">{links}</nav></header>'
+
+
+def topbar(current=None):
+    """Page links without a page title, for documents that bring their own heading (reports)."""
+    links = "".join(
+        f'<a href="{path}"{" aria-current=page" if key == current else ""}>{label}</a>'
+        for key, path, label in PAGES)
+    return (f'<header class="top slim"><a class="brand" href="/">IdeaPulse</a>'
+            f'<nav class="links" aria-label="Pages">{links}</nav></header>')
 
 
 def page(title, body, css="", tab_title=None):
