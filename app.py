@@ -829,6 +829,10 @@ def _outreach_page(name="", status="all", prefill=0):
 
 app = FastAPI(title="IdeaPulse")
 
+# Visitors through a shared Cloudflare link must enter an access code; local use is untouched.
+import share_gate
+share_gate.install(app)
+
 # One MiroFish simulation at a time (see the /simulate route for why).
 _SIM_LOCK = threading.Lock()
 _SIM_RUNNING = {"id": None}

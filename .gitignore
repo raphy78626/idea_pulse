@@ -8,3 +8,7 @@ ideas.db.bak-*
 
 # local tooling state
 .cursor/
+
+# temporary shared-link access code (share_gate.py)
+.share_access
+.share_tunnel.log
