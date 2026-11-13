@@ -1,7 +1,20 @@
 """Tests for mirofish_bridge. No network, no model, no subprocess."""
 import json
 
+import pytest
+
 import mirofish_bridge
+
+
+@pytest.fixture(autouse=True)
+def _assume_configured_backend(monkeypatch):
+    """These tests exercise stage logic, not credential validation.
+
+    `run_simulation` calls preflight(), which now refuses to run when the graph
+    backend has a placeholder key. The local machine may legitimately have one,
+    so stub the credential probe out — test_graph_preflight.py owns that check.
+    """
+    monkeypatch.setattr(mirofish_bridge, "graph_backend_problem", lambda: "")
 
 
 MIROFISH_REPORT = """# Future Forecast Report: Market Reaction

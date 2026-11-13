@@ -12,6 +12,10 @@ import app as ideapulse  # noqa: E402
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ideapulse, "DB", tmp_path / "ideas.db")
     monkeypatch.setattr(ideapulse, "EVAL_DIR", tmp_path / "evaluations")
+    # /simulate now validates the graph backend before doing work. The local
+    # machine may have a placeholder ZEP key, so assume a configured backend
+    # here; test_graph_preflight.py owns that check.
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda *a, **k: (True, ""))
     conn = ideapulse.db()
     conn.execute("INSERT INTO items (fetched_on, source, title, url, meta) VALUES (?,?,?,?,?)",
                  ("2026-11-09", "Reddit", "Test idea", "http://x/1", "some context"))
@@ -101,6 +105,70 @@ def test_pending_simulations_skips_completed(client):
     conn.commit(); conn.close()
     rows = ideapulse.pending_simulations(limit=10)
     assert [r["id"] for r in rows] == [], "items with a usable report must be skipped"
+
+
+def test_simulate_job_progress_advances_with_real_stages(client, monkeypatch):
+    """Regression: on_stage(pct, msg) must advance the job, not just its label.
+
+    The route used to call label(msg) and drop pct, so a 6-minute simulation
+    showed 0/4 and 0% the whole way. The progress bar must reflect the bridge's
+    real stage percentages.
+    """
+    conn = ideapulse.db()
+    conn.execute("UPDATE items SET verdict='BUILD' WHERE id=1")
+    conn.commit(); conn.close()
+
+    seen = []
+
+    def fake_run(title, meta, source, on_stage=None, out_path=None, evaluation=""):
+        # the real bridge emits (lo, label) per stage
+        for pct, msg in ((0, "mapping the market"),
+                         (30, "building the knowledge graph"),
+                         (55, "running agent reactions"),
+                         (85, "writing the report")):
+            on_stage(pct, msg)
+            seen.append(pct)
+        import pathlib
+        p = pathlib.Path(str(out_path))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# Report\n\n" + ("Body sentence. " * 40), encoding="utf-8")
+        return {"simulation_id": "sim_p", "report_path": str(p)}
+
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "preflight", lambda: (True, ""))
+    monkeypatch.setattr(ideapulse.mirofish_bridge, "run_simulation", fake_run)
+
+    # Record what `tick` the route calls at each stage. jobs.py forces
+    # done=total on success, so asserting only the final state would let an
+    # always-zero bar pass — this asserts the intermediate advances directly.
+    import jobs as jobs_mod
+    ticks = []
+    real_start = jobs_mod.start
+
+    def spy_start(label_text, total, fn, expect_s=None):
+        def wrapped(tick, label):
+            def recording_tick(n=1):
+                ticks.append(n)
+                tick(n)
+            return fn(recording_tick, label)
+        return real_start(label_text, total, wrapped, expect_s=expect_s)
+
+    monkeypatch.setattr(jobs_mod, "start", spy_start)
+
+    r = client.get("/simulate/1?async_=1")
+    jid = r.json()["job"]
+
+    import time as _t
+    for _ in range(120):
+        st = client.get("/jobs/" + jid).json()
+        if st["state"] != "running":
+            break
+        _t.sleep(0.05)
+
+    assert st["state"] == "done", st
+    assert st["done"] == st["total"], "bar must reach the end"
+    assert st["pct"] == 100
+    assert seen == [0, 30, 55, 85], "bridge stage percentages must be forwarded"
+    assert ticks, "on_stage must advance the job counter, not just its label"
 
 
 def test_run_simulations_records_attempt_and_report(client, tmp_path, monkeypatch):

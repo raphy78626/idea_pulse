@@ -4,6 +4,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -398,8 +399,9 @@ def _money_call(title, meta, source=""):
     # reply GO while writing "no concrete service identified" — that is a LATER
     # at best, and left alone it puts dead rows at the top of the board.
     vague = (not what.strip()
-             or what.lower().startswith("no concrete")
-             or what.lower().startswith("nothing")
+             or what.lower().startswith(("no concrete", "nothing", "no micro",
+                                         "no specific", "none ", "n/a"))
+             or re.match(r"^no\s+\w*\s*(product|service|offer|idea)\b", what.lower())
              or "not a paid opportunity" in what.lower())
     if v == "GO" and vague:
         v = "LATER"
@@ -761,6 +763,10 @@ def _outreach_page(name="", status="all", prefill=0):
 
 app = FastAPI(title="IdeaPulse")
 
+# One MiroFish simulation at a time (see the /simulate route for why).
+_SIM_LOCK = threading.Lock()
+_SIM_RUNNING = {"id": None}
+
 from launch import router as launch_router
 app.include_router(launch_router)
 
@@ -885,7 +891,8 @@ def deepeval(item_id: int, force: int = 0, async_: int = 0):
                 raise RuntimeError(status)
             return {"path": path, "status": status}
 
-        return {"job": jobs.start(f"Deep evaluating “{title}”", 2, work)}
+        return {"job": jobs.start(f"Deep evaluating “{title}”", 2, work,
+                                  expect_s=(40, 180))}
     path, status = deep_eval(item_id, force=bool(force))
     return {"path": path, "status": status}
 
@@ -903,6 +910,26 @@ def simulate(item_id: int, force: int = 0, async_: int = 0):
     if not force and row["sim_path"] and mirofish_bridge.read_report(row["sim_path"]):
         return {"ok": True, "status": "existing", "path": row["sim_path"]}
 
+    # Check the backend before taking the lock or spawning anything. With a
+    # placeholder ZEP key the graph build blocks at 55% for minutes, so an
+    # immediate, actionable error beats a job that looks busy then dies.
+    ok, hint = mirofish_bridge.preflight()
+    if not ok:
+        return {"ok": False, "error": hint}
+
+    # One simulation at a time. MiroFish holds a single Kuzu graph handle per
+    # process and a run costs 6-11 minutes of model calls; two concurrent runs
+    # contend for that handle and both get slower (observed: three parallel
+    # builds, none finishing). Refuse rather than queue.
+    with _SIM_LOCK:
+        if _SIM_RUNNING["id"]:
+            return {"ok": False,
+                    "error": "a simulation is already running for idea %s — wait for it "
+                             "to finish (MiroFish handles one run at a time)"
+                             % _SIM_RUNNING["id"],
+                    "busy": True}
+        _SIM_RUNNING["id"] = item_id
+
     base_dir = Path(__file__).parent
     out_path = base_dir / "evaluations" / ("sim_%d.md" % item_id)
     evaluation_md = ""
@@ -913,8 +940,23 @@ def simulate(item_id: int, force: int = 0, async_: int = 0):
             evaluation_md = ""
 
     def work(tick, label):
+        try:
+            return _run_sim_work(tick, label)
+        finally:
+            with _SIM_LOCK:
+                _SIM_RUNNING["id"] = None
+
+    def _run_sim_work(tick, label):
         def on_stage(pct, msg):
+            # The bridge reports 0/30/55/85 across its four stages; the job is
+            # counted out of 4 steps. Map that percentage onto the step counter so
+            # the bar moves during a 6-minute run instead of sitting at 0/4.
             label(msg)
+            want = int(round(pct / 100.0 * 4))
+            if want > STEP_SEEN["n"]:
+                tick(want - STEP_SEEN["n"])
+                STEP_SEEN["n"] = want
+        STEP_SEEN = {"n": 0}
         result = mirofish_bridge.run_simulation(
             row["title"], row["meta"], row["source"],
             on_stage=on_stage, out_path=out_path, evaluation=evaluation_md)
@@ -930,7 +972,10 @@ def simulate(item_id: int, force: int = 0, async_: int = 0):
     if async_:
         import jobs
         title = (row["title"] or "#%d" % item_id)[:70]
-        return {"job": jobs.start("Simulating %s" % title, 4, work)}
+        # 6-11 minutes measured (design doc §5); stages are uneven, so the
+        # per-step rate alone would mislead early on.
+        return {"job": jobs.start("Simulating %s" % title, 4, work,
+                                  expect_s=(360, 660))}
     try:
         result = work(lambda n: None, lambda msg: None)
         return {"ok": True, "status": "new", "path": result["path"]}
@@ -1104,16 +1149,44 @@ def report(item_id: int):
 @app.get("/simulation/{item_id}", response_class=HTMLResponse)
 def simulation_report(item_id: int):
     conn = db(); conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT sim_path FROM items WHERE id=?", (item_id,)).fetchone()
+    row = conn.execute("SELECT sim_path, title FROM items WHERE id=?", (item_id,)).fetchone()
     conn.close()
     md = mirofish_bridge.read_report(row["sim_path"]) if row and row["sim_path"] else ""
     if not md:
         return HTMLResponse(
             '<p style="font-family:sans-serif;padding:30px">No reaction simulation yet '
             '— run 🎭 simulate first.</p>', status_code=404)
+    # MiroFish titles its output "Future Forecast Report" and writes in the future
+    # tense, but it is a simulated reaction, not a forecast, and no time-series
+    # model is involved. Retitle so the page does not overclaim.
+    md = _retitle_simulation(md, (row["title"] or "")[:110] if row else "")
     body = _md_to_html(md)
+    # Plain-language explainer first: what this is, who took part, what it cannot tell you.
+    intro = ""
+    try:
+        import sim_explain
+        intro = sim_explain.render(md, (row["title"] or "")[:110] if row else "")
+    except Exception:
+        intro = ""
+    body = intro + body
     return HTMLResponse(REPORT_PAGE.replace("{{BODY}}", body)
                         .replace("{{JOBBAR}}", __import__("jobs").WIDGET))
+
+
+def _retitle_simulation(md, idea_title=""):
+    """Replace MiroFish's 'Future Forecast Report' heading with an accurate one.
+
+    The body still reads "will" because it is a transcript of what the simulated
+    agents did; the disclaimer in the explainer covers that. Only the title is
+    corrected, since it is the one line that claims forecasting.
+    """
+    first, _, rest = (md or "").partition("\n")
+    if not first.startswith("#"):
+        return md
+    heading = ("# Reaction simulation — how the market responded\n\n"
+               f"*Simulated reaction for: {idea_title}*" if idea_title
+               else "# Reaction simulation — how the market responded")
+    return heading + ("\n" + rest if rest else "")
 
 
 @app.post("/fetch")

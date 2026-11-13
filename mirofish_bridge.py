@@ -14,6 +14,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
@@ -227,9 +228,90 @@ def run_stage(args, timeout=STAGE_TIMEOUT_S):
     return parse_envelope(proc.stdout or "")
 
 
-def preflight():
-    # type: () -> Tuple[bool, str]
-    """Confirm the MiroFish server is reachable; return a remedy hint on failure."""
+def _env_file_candidates():
+    """Where MiroFish keeps its .env, in the order its own launcher looks."""
+    return [
+        Path.home() / ".hermes/tools/prediction/mirofish/.env",
+        Path.home() / ".hermes/.env",
+    ]
+
+
+def _local_zep_path():
+    """The file install_local_graph.py patches. A seam so tests can substitute."""
+    return (Path.home() / ".hermes/tools/prediction/mirofish"
+            / "backend/app/utils/zep.py")
+
+
+def graph_backend_problem():
+    """Detect a graph backend that genuinely cannot build.
+
+    Correction to an earlier, wrong version of this function: the placeholder
+    ZEP_API_KEY is NOT a problem. MiroFish is installed with the Hermes local
+    graph backend (install_local_graph.py), which overrides get_zep_client() to
+    use Graphiti+Kuzu and authenticates with LLM_API_KEY, not Zep. Upstream's
+    `if not Config.ZEP_API_KEY` guards only test for a non-empty string, so the
+    placeholder exists to satisfy them while the local client does the work.
+    Simulations have completed under exactly this config (6, 1 and 6 entities),
+    so requiring a real Zep key would break a working setup.
+
+    What actually matters is that the local override is present and its LLM
+    credentials exist.
+    """
+    # 1. Is the local backend installed? Without it, Zep Cloud is required.
+    zep_py = _local_zep_path()
+    try:
+        installed = "hermes local graph backend" in zep_py.read_text()
+    except OSError:
+        installed = False
+
+    if not installed:
+        key = ""
+        for path in _env_file_candidates():
+            try:
+                for line in path.read_text().splitlines():
+                    if line.strip().startswith("ZEP_API_KEY="):
+                        key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+            except OSError:
+                continue
+            if key:
+                break
+        if not key or "placeholder" in key.lower():
+            return ("the Hermes local graph backend is not installed and no real "
+                    "ZEP_API_KEY is set. Install the local backend (no account "
+                    "needed): ~/.hermes/tools/prediction/.venv/bin/python "
+                    "~/.hermes/skills/mlops/foresight/scripts/install_local_graph.py "
+                    "— or get a free Zep key at https://app.getzep.com/")
+        return ""
+
+    # 2. Local backend present: it needs LLM credentials, not Zep.
+    llm_key = ""
+    for path in _env_file_candidates():
+        try:
+            for line in path.read_text().splitlines():
+                if line.strip().startswith("LLM_API_KEY="):
+                    llm_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except OSError:
+            continue
+        if llm_key:
+            break
+    if not llm_key:
+        return ("the local graph backend needs LLM_API_KEY in MiroFish's .env "
+                "(it builds the graph with your own model calls, not Zep). "
+                "Add LLM_API_KEY=sk-or-... and restart: "
+                "~/.hermes/skills/mlops/foresight/scripts/mirofish_server.sh restart")
+    return ""
+
+
+def preflight(check_graph=True):
+    # type: (bool) -> Tuple[bool, str]
+    """Confirm the MiroFish server is reachable; return a remedy hint on failure.
+
+    check_graph also validates the graph backend credentials, because a healthy
+    server with a placeholder key still cannot build a graph — it just fails
+    slowly. Pass check_graph=False only to probe process liveness.
+    """
     try:
         run_stage(["health"], timeout=30)
     except BridgeError as exc:
@@ -246,6 +328,11 @@ def preflight():
                 "~/.hermes/skills/mlops/foresight/scripts/install_local_graph.py"
             )
         return False, message
+
+    if check_graph:
+        problem = graph_backend_problem()
+        if problem:
+            return False, problem
     return True, ""
 
 

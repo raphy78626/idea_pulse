@@ -1,14 +1,32 @@
-"""Background jobs with progress, for IdeaPulse's slow operations.
+"""Background jobs with progress and ETA, for IdeaPulse's slow operations.
 
-The expensive calls (deep evaluate, evaluate-many, fetch, scrape) block for
-1-3 minutes. A browser can't show progress on a single blocking request, so each
-one is moved into a thread here and the page polls /jobs/<id>.
+The expensive calls (deep evaluate, evaluate-many, fetch, scrape, simulate)
+block for 1-3 minutes. A browser can't show progress on a single blocking
+request, so each one is moved into a thread here and the page polls /jobs/<id>.
 
 Usage:
     jid = jobs.start("Deep evaluate", total=3, fn=lambda tick, label: work(tick, label))
-    # then GET /jobs/<jid> -> {"state": "running", "done": 1, "total": 3, ...}
+    # then GET /jobs/<jid> -> {"state": "running", "done": 1, "total": 3,
+    #                          "pct": 33, "eta": 84.0, "eta_confidence": "fair", ...}
 
 `total=0` means indeterminate: the UI shows stripes instead of a filled bar.
+
+ETA design
+----------
+Per-item times in this app are wildly uneven: a free-model evaluation is 5-20s
+when a model answers and 90s+ when the chain has to fall back, and a MiroFish
+simulation spends 2 minutes in one stage and 4 in the next. So:
+
+  - ETA is computed from observed throughput (done / elapsed), which
+    self-corrects as the job runs, rather than from a fixed guess.
+  - It is withheld (None) until at least two items are done, because a single
+    sample is a guess dressed up as a number.
+  - Confidence is reported explicitly: "low" (<3 samples), "fair" (<8), "good".
+  - The first item of a job is excluded from the rate until the second
+    completes, since warm-up (model discovery, graph load) inflates it.
+
+Reporting a wrong ETA is worse than reporting none, so the UI only shows one
+when `eta` is not None and labels it as an estimate.
 """
 import threading
 import time
@@ -19,29 +37,59 @@ _jobs = {}
 KEEP_S = 600        # how long a finished job stays pollable
 MAX_JOBS = 40       # cap so a long session can't grow unbounded
 
+# ETA needs this many completed steps before it is shown at all.
+MIN_SAMPLES = 2
+# Smoothing: weight given to the newest interval. Lower = steadier ETA.
+ALPHA = 0.4
 
-def start(label, total, fn):
+
+def start(label, total, fn, expect_s=None):
     """Run fn(tick, label) in a daemon thread. Returns the job id.
 
     tick(n) advances the counter; label(text) replaces the status line.
     Whatever fn returns is exposed as result (stringified for safety).
+
+    expect_s: optional (low, high) typical duration in seconds. Used for
+    single-shot jobs (deep eval, one simulation) where a per-step rate cannot
+    produce an ETA — the UI shows "typically 40-90s" against elapsed instead.
     """
     jid = uuid.uuid4().hex[:12]
     job = {
         "id": jid, "label": label, "done": 0, "total": max(0, int(total)),
         "state": "running", "message": "", "started": time.time(),
-        "ended": 0.0, "result": "",
+        "ended": 0.0, "result": "", "expect_s": expect_s,
+        # timing for ETA
+        "step_started": time.time(),   # when the current step began
+        "interval": 0.0,               # smoothed seconds per step
+        "samples": 0,                  # completed steps with a usable interval
     }
     with _lock:
         _jobs[jid] = job
         _prune_locked()
 
     def tick(n=1):
+        now = time.time()
         with _lock:
             if job["total"]:
-                job["done"] = min(job["total"], job["done"] + n)
+                new_done = min(job["total"], job["done"] + n)
+                steps = new_done - job["done"]
+                job["done"] = new_done
             else:
+                steps = n
                 job["done"] += n
+            if steps > 0:
+                # one interval per tick call, regardless of how many steps it moved
+                dt = now - job["step_started"]
+                job["step_started"] = now
+                per_step = dt / steps
+                if job["samples"] == 0:
+                    # first interval includes warm-up; seed with it but do not
+                    # trust it as a stable rate yet
+                    job["interval"] = per_step
+                else:
+                    job["interval"] = (ALPHA * per_step
+                                       + (1 - ALPHA) * job["interval"])
+                job["samples"] += steps
 
     def set_label(text):
         with _lock:
@@ -85,9 +133,37 @@ def get(jid):
         if not j:
             return None
         out = dict(j)
-    elapsed = (out["ended"] or time.time()) - out["started"]
+    now = time.time()
+    elapsed = (out["ended"] or now) - out["started"]
     out["elapsed"] = round(elapsed, 1)
-    out["pct"] = round(out["done"] * 100 / out["total"]) if out["total"] else 0
+    total, done = out["total"], out["done"]
+    out["pct"] = round(done * 100 / total) if total else 0
+
+    # ETA: only when we have a real rate to extrapolate from.
+    eta = None
+    confidence = "none"
+    remaining = max(0, total - done) if total else 0
+    if (out["state"] == "running" and total and remaining
+            and out["samples"] >= MIN_SAMPLES and out["interval"] > 0):
+        eta = out["interval"] * remaining          # smoothed per-step interval
+        # bound it by observed throughput so one slow step cannot triple it
+        throughput_eta = (elapsed / done) * remaining if done else None
+        if throughput_eta and eta > throughput_eta * 2.5:
+            eta = throughput_eta
+        eta = round(eta, 1)
+        confidence = ("low" if out["samples"] < 3 else
+                      "fair" if out["samples"] < 8 else "good")
+    out["eta"] = eta
+    out["eta_confidence"] = confidence
+    out["remaining"] = remaining
+    out["expect_s"] = out.get("expect_s")
+    # For single-shot jobs (no per-step rate available) fall back to the
+    # declared typical range, but only while running and only as a range.
+    if eta is None and out["state"] == "running" and out["expect_s"]:
+        low, high = out["expect_s"]
+        out["eta_range"] = [low, high]
+    else:
+        out["eta_range"] = None
     return out
 
 
@@ -103,7 +179,10 @@ WIDGET = """
 <div id="jobbox" style="display:none">
   <div class="jb-head"><span id="jb-label">working…</span><span id="jb-pct"></span></div>
   <div class="jb-track"><div class="jb-fill" id="jb-fill"></div></div>
-  <div class="jb-foot"><span id="jb-count"></span><span id="jb-time"></span></div>
+  <div class="jb-foot">
+    <span id="jb-count"></span>
+    <span id="jb-times"><span id="jb-eta"></span><span id="jb-time"></span></span>
+  </div>
 </div>
 <style>
 #jobbox{position:fixed;right:18px;bottom:18px;z-index:9999;width:330px;max-width:calc(100vw - 36px);
@@ -121,7 +200,12 @@ WIDGET = """
   animation:jbslide 1s linear infinite}
 @keyframes jbslide{from{background-position:0 0}to{background-position:28px 0}}
 .jb-foot{display:flex;justify-content:space-between;font-size:11.5px;color:#667781;
-  font-variant-numeric:tabular-nums}
+  font-variant-numeric:tabular-nums;gap:8px}
+#jb-times{display:flex;gap:8px;align-items:center}
+#jb-eta{color:#7dd3fc;font-weight:600}
+#jb-eta.low{color:#94a3b8;font-weight:500}
+#jb-eta.fair{color:#7dd3fc}
+#jb-eta.good{color:#4ade80;font-weight:700}
 #jobbox.done .jb-fill{background:#4ade80}
 #jobbox.done{border-color:#14532d}
 </style>
@@ -129,7 +213,12 @@ WIDGET = """
 (function(){
   const box = document.getElementById('jobbox');
   let timer = null, started = 0, onDone = null;
-  function fmt(s){ return s < 60 ? s.toFixed(1)+'s' : Math.floor(s/60)+'m '+String(Math.round(s%60)).padStart(2,'0')+'s'; }
+  function fmt(s){
+    s = Math.max(0, s);
+    if (s < 60) return Math.round(s) + 's';
+    const m = Math.floor(s / 60), r = Math.round(s % 60);
+    return m + 'm ' + String(r).padStart(2,'0') + 's';
+  }
   window.JobBar = {
     watch(jid, doneCb){
       onDone = doneCb || null;
@@ -140,6 +229,8 @@ WIDGET = """
       document.getElementById('jb-label').textContent = 'starting…';
       document.getElementById('jb-pct').textContent = '';
       document.getElementById('jb-count').textContent = '';
+      document.getElementById('jb-eta').textContent = '';
+      document.getElementById('jb-time').textContent = '';
       clearInterval(timer);
       timer = setInterval(() => poll(jid), 600);
       poll(jid);
@@ -152,13 +243,37 @@ WIDGET = """
     catch { return; }
     if (j.state === 'missing'){ JobBar.hide(); return; }
     const indet = !j.total;
-    box.classList.toggle('indet', indet && j.state === 'running');
+    const running = j.state === 'running';
+    box.classList.toggle('indet', indet && running);
     document.getElementById('jb-label').textContent = j.label || 'working…';
     document.getElementById('jb-pct').textContent = indet ? '' : j.pct + '%';
     if (!indet) document.getElementById('jb-fill').style.width = j.pct + '%';
     document.getElementById('jb-count').textContent =
       indet ? '' : (j.done + ' / ' + j.total);
+
+    // ETA: only shown when the server has a rate worth trusting.
+    const etaEl = document.getElementById('jb-eta');
+    if (running && j.eta != null && j.remaining > 0){
+      etaEl.textContent = '~' + fmt(j.eta) + ' left';
+      etaEl.className = j.eta_confidence || 'low';
+      etaEl.title = j.eta_confidence === 'good'
+        ? 'Estimate from ' + j.done + ' completed steps'
+        : 'Rough estimate — confidence ' + (j.eta_confidence || 'low');
+    } else if (running && j.eta_range){
+      // single-shot job: a declared range beats a fake precision
+      const lo = fmt(j.eta_range[0]), hi = fmt(j.eta_range[1]);
+      etaEl.textContent = 'usually ' + lo + '–' + hi;
+      etaEl.className = 'low';
+      etaEl.title = 'Typical duration for this operation, not a live estimate';
+    } else if (running && !indet){
+      etaEl.textContent = 'estimating…';
+      etaEl.className = 'low';
+      etaEl.title = 'Needs a couple of finished steps before it can estimate';
+    } else {
+      etaEl.textContent = '';
+    }
     document.getElementById('jb-time').textContent = fmt(j.elapsed || 0);
+
     if (j.state === 'done' || j.state === 'error'){
       clearInterval(timer);
       const bad = j.state === 'error';
@@ -166,6 +281,7 @@ WIDGET = """
       document.getElementById('jb-label').textContent =
         bad ? ('failed — ' + (j.message || 'unknown')) : (j.label || 'done');
       document.getElementById('jb-pct').textContent = bad ? '✕' : '✓';
+      document.getElementById('jb-eta').textContent = '';
       if (onDone) onDone(j);
       setTimeout(() => { if (box.classList.contains('done') || box.classList.contains('err')) JobBar.hide(); },
                  bad ? 8000 : 2500);
