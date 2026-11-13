@@ -1458,7 +1458,10 @@ def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
             f'{vcounts["pending"]:,} {"hasn’t" if vcounts["pending"] == 1 else "haven’t"} been read yet.')
     day = datetime.now().strftime("%A %-d %B")
 
-    return (HTML_TEMPLATE.replace("{{ENTRIES}}", entries).replace("{{PAGER}}", pager)
+    import theme
+    return (HTML_TEMPLATE.replace("{{FONTS}}", theme.FONTS).replace("{{THEME_CSS}}", theme.CSS)
+            .replace("{{HEADER}}", theme.header("ideas", "IdeaPulse"))
+            .replace("{{ENTRIES}}", entries).replace("{{PAGER}}", pager)
             .replace("{{LEDE}}", esc(lede)).replace("{{DAY}}", day)
             .replace("{{TABS}}", tabs).replace("{{RAIL}}", rail).replace("{{VIEW}}", view)
             .replace("{{JOBBAR}}", __import__("jobs").WIDGET)
@@ -1468,44 +1471,9 @@ def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IdeaPulse</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+{{FONTS}}
 <style>
-:root{
-  --ground:#141c23; --surface:#1a242d; --rule:#25313b;
-  --ink:#e8e2d4; --muted:#8b979f; --faint:#5d6b75;
-  --mark:#f0c64a; --mark-bg:rgba(240,198,74,.22); --rival:#7fa8d6; --flag:#e48a78;
-  --serif:'Newsreader',Georgia,'Times New Roman',serif;
-  --sans:'Atkinson Hyperlegible',-apple-system,'Segoe UI',sans-serif;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--ground);color:var(--ink);font:16px/1.55 var(--sans);
-  padding:40px 32px 90px;max-width:1160px;margin:0 auto}
-a{color:inherit}
-a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--mark);outline-offset:3px;border-radius:2px}
-[hidden]{display:none!important}
-
-header{display:flex;justify-content:space-between;align-items:baseline;gap:12px 20px;flex-wrap:wrap}
-h1{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}
-.links{display:flex;flex-wrap:wrap;gap:4px 18px}
-.links a{color:var(--muted);text-decoration:none;font-size:14px;white-space:nowrap}
-.links a:hover{color:var(--ink)}
-.day{color:var(--muted);font-size:14px;margin-top:18px}
-.lede{font:400 23px/1.4 var(--serif);max-width:34em;margin:4px 0 0;text-wrap:balance}
-
-.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 0}
-.bar button{font:700 14px/1 var(--sans);border-radius:6px;padding:11px 18px;cursor:pointer;
-  border:1px solid var(--ink);background:var(--ink);color:var(--ground)}
-.bar button.second{background:transparent;color:var(--ink);border-color:var(--faint)}
-.bar button:hover{opacity:.88}
-#status{color:var(--muted);font-size:14px;margin-left:6px}
-
-.tabs{display:flex;gap:8px 22px;flex-wrap:wrap;margin:34px 0 0;border-bottom:1px solid var(--rule)}
-.tab{color:var(--muted);text-decoration:none;font-size:15px;padding:0 0 10px;margin-bottom:-1px;
-  border-bottom:2px solid transparent;white-space:nowrap}
-.tab:hover{color:var(--ink)}
-.tab[aria-current]{color:var(--ink);border-bottom-color:var(--ink);font-weight:700}
+{{THEME_CSS}}
 
 .layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:56px;margin-top:34px}
 .rail summary{font:700 13px/1.3 var(--sans);color:var(--muted);cursor:pointer;list-style:none;margin-bottom:10px}
@@ -1577,16 +1545,13 @@ h1{font:500 44px/1.05 var(--serif);letter-spacing:-.01em}
 }
 </style></head>
 <body>
-<header>
-  <h1>IdeaPulse</h1>
-  <nav class="links"><a href="/pains">Pains</a><a href="/money">First customer</a><a href="/launch">Launch directories</a><a href="/outreach">Outreach</a></nav>
-</header>
+{{HEADER}}
 <p class="day">{{DAY}}</p>
 <p class="lede">{{LEDE}}</p>
 <div class="bar">
   <button type="button" onclick="fetchNow()">Fetch new ideas</button>
   <button type="button" class="second" onclick="evalNow()">Evaluate 25 more</button>
-  <span id="status" role="status"></span>
+  <span id="status" class="say" role="status"></span>
 </div>
 <nav class="tabs" aria-label="Filter by verdict">{{TABS}}</nav>
 <div class="layout">
