@@ -842,6 +842,9 @@ app.include_router(money_router)
 from pains_page import router as pains_router
 app.include_router(pains_router)
 
+from sim_guide import router as sim_guide_router
+app.include_router(sim_guide_router)
+
 
 @app.get("/jobs/{jid}")
 def job_status(jid: str):
@@ -999,8 +1002,10 @@ def simulate(item_id: int, force: int = 0, async_: int = 0):
                     "busy": True}
         _SIM_RUNNING["id"] = item_id
 
-    base_dir = Path(__file__).parent
-    out_path = base_dir / "evaluations" / ("sim_%d.md" % item_id)
+    # EVAL_DIR, not a path built here: tests point EVAL_DIR at a temp folder, and a
+    # hard-coded path made the suite write sim_<id>.md into the repo tree.
+    EVAL_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = EVAL_DIR / ("sim_%d.md" % item_id)
     evaluation_md = ""
     if row["report_path"]:
         try:
@@ -1218,7 +1223,7 @@ def report(item_id: int):
 @app.get("/simulation/{item_id}", response_class=HTMLResponse)
 def simulation_report(item_id: int):
     conn = db(); conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT sim_path, title FROM items WHERE id=?", (item_id,)).fetchone()
+    row = conn.execute("SELECT sim_path, title, what FROM items WHERE id=?", (item_id,)).fetchone()
     conn.close()
     md = mirofish_bridge.read_report(row["sim_path"]) if row and row["sim_path"] else ""
     if not md:
@@ -1234,7 +1239,8 @@ def simulation_report(item_id: int):
     intro = ""
     try:
         import sim_explain
-        intro = sim_explain.render(md, (row["title"] or "")[:110] if row else "")
+        intro = sim_explain.render(md, (row["title"] or "")[:110] if row else "",
+                                   ((row["what"] or "") + " " + (row["title"] or "")) if row else "")
     except Exception:
         intro = ""
     body = intro + body

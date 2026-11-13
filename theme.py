@@ -23,6 +23,7 @@ PAGES = [  # (key, path, label)
     ("money", "/money", "First customer"),
     ("launch", "/launch", "Launch directories"),
     ("outreach", "/outreach", "Outreach"),
+    ("simulations", "/simulations", "Simulations"),
 ]
 
 CSS = """

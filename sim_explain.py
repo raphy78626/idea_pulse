@@ -221,6 +221,111 @@ def explain(report, idea_title=""):
     }
 
 
+# ---------------------------------------------------------------- honesty checks
+#
+# Two questions a reader cannot answer from the report itself:
+#   1. Did the run stay on the idea? Measured on real runs: the "Good for Bots"
+#      report (an AI-crawler URL scanner) named 0 of the idea's 8 key terms and
+#      was about Clay, Apollo and ZoomInfo instead. The DMARC run named 7 of 10.
+#   2. Did it have enough to go on? The Android-app run quoted 5 facts and said
+#      itself that it had "no first-person statements".
+
+# Words too general to show a report is about *this* idea.
+_TOPIC_STOP = set("""
+a an the and or of for to in on with without that this these those is are be by from as at it its
+your their our you can could would will into about over under than then when what which who whom
+whose how why simple free tool tools app apps site sites website websites report reports market
+product products service services new based using use users user people business businesses
+small help helps check checks idea ideas announce announced get gets make makes more most very
+just only also like via per whether good last month brought specific growing fast quietly
+costing grows grew online page pages first best really
+""".split())
+
+_FACT = re.compile(r'^>\s*"(.+?)"\s*$', re.M)
+_ADMITS_THIN = re.compile(
+    r"no first-person statements|evidence-poor|only (?:one|two|three|a few) (?:current )?facts"
+    r"|limited (?:data|evidence)|offers only a few signals", re.I)
+
+THIN_FACTS = 6          # fewer quoted facts than this and the run is a sketch
+ON_TOPIC_SHARE = 0.4    # share of the idea's key terms the report must use twice or more
+OFF_TOPIC_SHARE = 0.2
+
+
+def key_terms(text, limit=12):
+    """Distinctive words of the idea, in order: 'dmarc', 'outlook.com', 'crawlers'."""
+    out = []
+    for w in re.findall(r"[a-z][a-z0-9.\-]{2,}", (text or "").lower()):
+        w = w.strip(".-")
+        if len(w) >= 4 and w not in _TOPIC_STOP and w not in out:
+            out.append(w)
+    return out[:limit]
+
+
+def topic_check(report, idea_text):
+    """Does the report keep talking about the idea it was given?"""
+    terms = key_terms(idea_text)
+    low = (report or "").lower()
+    counts = {t: len(re.findall(r"\b" + re.escape(t), low)) for t in terms}
+    found = [t for t in terms if counts[t] >= 2]
+    missing = [t for t in terms if counts[t] == 0]
+    if not terms:
+        level = "unknown"
+    else:
+        share = len(found) / float(len(terms))
+        level = "on" if share >= ON_TOPIC_SHARE else ("off" if share < OFF_TOPIC_SHARE else "partial")
+    return {"level": level, "terms": terms, "found": found, "missing": missing}
+
+
+def thin_check(report):
+    """How many distinct facts the run quoted, and whether it admits it had little."""
+    facts = len(set(_FACT.findall(report or "")))
+    admits = bool(_ADMITS_THIN.search(report or ""))
+    return {"facts": facts, "admits": admits, "thin": facts < THIN_FACTS or admits}
+
+
+def _and(words, joiner="and"):
+    words = list(words)
+    if len(words) <= 1:
+        return "".join(words)
+    return ", ".join(words[:-1]) + f" {joiner} " + words[-1]
+
+
+def run_verdict(report, idea_text):
+    """One plain verdict per run: usable, off_topic or thin, with a sentence saying why."""
+    topic = topic_check(report, idea_text)
+    thin = thin_check(report)
+    if topic["level"] == "off":
+        names = _and(extract_cast(report, limit=3)) or "other things"
+        missing = _and(topic["missing"][:3], "or")
+        return {"kind": "off_topic", "topic": topic, "thin": thin,
+                "label": "Went off topic",
+                "say": (f"The report is mostly about {names} and never mentions {missing}. "
+                        "It answered a different question; don't use it for this idea.")}
+    if thin["thin"]:
+        own = " and says so itself" if thin["admits"] else ""
+        return {"kind": "thin", "topic": topic, "thin": thin,
+                "label": "Too little to go on",
+                "say": (f"The run had only {thin['facts']} fact{'' if thin['facts'] == 1 else 's'} "
+                        f"to work with{own}. Treat it as a rough sketch.")}
+    partly = "Mostly on topic. " if topic["level"] == "partial" else ""
+    return {"kind": "usable", "topic": topic, "thin": thin,
+            "label": "Stayed on the idea",
+            "say": (f"{partly}It quoted {thin['facts']} facts to work from. "
+                    "Read the quotes for objections, rivals and where buyers gather.")}
+
+
+def example_quotes(report, idea_text, limit=3):
+    """Quoted facts that use the idea's own words: the most useful lines in a report."""
+    terms = topic_check(report, idea_text)["found"]
+    out = []
+    for q in dict.fromkeys(_FACT.findall(report or "")):
+        if not terms or any(t in q.lower() for t in terms):
+            out.append(q)
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ---------------------------------------------------------------- rendering
 
 def _esc(s):
@@ -228,125 +333,74 @@ def _esc(s):
     return html.escape(str(s or ""), quote=True)
 
 
-def render(report, idea_title=""):
-    """HTML for the 'what this is' block shown above the raw report."""
+def render(report, idea_title="", idea_what=""):
+    """HTML for the plain-language block shown above the raw report."""
     e = explain(report, idea_title)
     if not e["words"]:
         return ""
-
-    cast_html = ""
-    if e["cast"]:
-        chips = "".join(
-            f'<span class="cast-chip">{_esc(n)}</span>' for n in e["cast"][:10])
-        cast_html = (
-            '<div class="sim-row"><div class="sim-k">Who took part</div>'
-            f'<div class="sim-v">{chips}'
-            '<div class="sim-note">These are simulated personas, not real companies '
-            'or people. MiroFish named them from your idea and had them react.</div>'
-            '</div></div>')
+    v = run_verdict(report, idea_what or idea_title)
 
     scen_html = ""
     if e["scenario"]:
         items = "".join(f"<li>{_esc(s)}</li>" for s in e["scenario"])
-        scen_html = (
-            '<div class="sim-row"><div class="sim-k">What was announced</div>'
-            f'<div class="sim-v"><ul class="sim-list">{items}</ul></div></div>')
+        scen_html = f'<h3>What the personas were told</h3><ul>{items}</ul>'
 
-    head_html = ""
-    if e["headline"]:
-        head_html = (
-            '<div class="sim-headline">'
-            f'<span class="sim-q">In one line</span>{_esc(e["headline"])}</div>')
-
-    sections_html = ""
-    if e["sections"]:
-        items = "".join(f"<li>{_esc(s)}</li>" for s in e["sections"])
-        sections_html = (
-            '<div class="sim-row"><div class="sim-k">How the report is built</div>'
-            f'<div class="sim-v"><ol class="sim-list">{items}</ol></div></div>')
+    cast_html = ""
+    if e["cast"]:
+        cast_html = (
+            f'<h3>Who took part</h3><p>{_esc(", ".join(e["cast"][:10]))}.</p>'
+            '<p class="sx-note">These are simulated personas, not real companies or people. '
+            'MiroFish named them from your idea and had them react.</p>')
 
     warn = ""
     if e["uses_forecast_language"]:
-        warn = (
-            '<div class="sim-warn">⚠ <b>The report reads like a forecast, but it is not one.</b> '
-            'It says things like “X <i>will</i> do Y”. MiroFish ran personas on a simulated '
-            'graph and recorded what they did in that run. It did not measure real buyers, '
-            'and no time-series model was involved.</div>')
+        warn = ('<p class="sx-warn">The report below says things like “X <i>will</i> do Y”. '
+                'Read that as “in this one role-play, X did Y”. Nobody measured real buyers.</p>')
 
     return f"""
-<div class="sim-intro">
-  <div class="sim-title">🔍 What this report is</div>
-  <p>A <b>reaction simulation</b>, not a prediction. MiroFish took your idea, turned it into
-  a small social graph of named participants, and let LLM personas react to the announcement
-  inside that graph. What you are reading is <b>what those personas did in one run</b>.</p>
+<section class="sx">
+  <p class="sx-lede">This is a rehearsal, not a forecast.</p>
+  <p>MiroFish gave AI personas your idea and let them act out how buyers, rivals and critics
+  might react. Below is what they did in one run: {e['words']:,} words, {len(e['cast'])} named
+  participants. No TimesFM or other forecasting model was used, and no real person was asked.
+  <a href="/simulations">How simulations work, with real examples</a></p>
 
-  <div class="sim-facts">
-    <div class="sim-fact"><b>{e['words']:,}</b><span>words</span></div>
-    <div class="sim-fact"><b>{len(e['cast'])}</b><span>participants</span></div>
-    <div class="sim-fact"><b>1</b><span>run (not an average)</span></div>
-    <div class="sim-fact no"><b>No</b><span>TimesFM used</span></div>
+  <div class="sx-check {v['kind']}">
+    <p class="sx-label">{_esc(v['label'])}</p>
+    <p>{_esc(v['say'])}</p>
   </div>
 
-  {head_html}
   {scen_html}
   {cast_html}
-  {sections_html}
   {warn}
 
-  <div class="sim-row"><div class="sim-k">How much to trust it</div>
-  <div class="sim-v">
-    <div class="sim-trust">
-      <div class="tr-good">✓ Useful for</div>
-      <ul class="sim-list">
-        <li>Hearing objections you had not thought of</li>
-        <li>Seeing which competitor gets threatened, and how</li>
-        <li>Picking the wording of a pitch before you send it</li>
-      </ul>
-      <div class="tr-bad">✗ Not evidence of</div>
-      <ul class="sim-list">
-        <li>That anyone will actually pay</li>
-        <li>Market size, growth, or timing (that needs real data, not a simulation)</li>
-        <li>What a specific real company will do next</li>
-      </ul>
-    </div>
-  </div></div>
-</div>
+  <div class="sx-trust">
+    <div><h3>Useful for</h3><ul>
+      <li>Hearing objections you had not thought of</li>
+      <li>Spotting which rival feels threatened</li>
+      <li>Finding where buyers gather, to pitch there</li></ul></div>
+    <div><h3>Not evidence of</h3><ul>
+      <li>That anyone will pay</li>
+      <li>Market size, growth or timing</li>
+      <li>What a real company will do next</li></ul></div>
+  </div>
+</section>
 <style>
-.sim-intro{{background:#0d1a22;border:1px solid #24404f;border-left:4px solid #38bdf8;
-  border-radius:12px;padding:16px 18px;margin:0 0 26px;font-size:14.5px;line-height:1.65}}
-.sim-title{{font-size:16px;font-weight:800;color:#7dd3fc;margin-bottom:8px}}
-.sim-intro p{{color:#c9d8e0;margin:0 0 12px}}
-.sim-intro b{{color:#e9edef}}
-.sim-facts{{display:flex;gap:9px;flex-wrap:wrap;margin:0 0 14px}}
-.sim-fact{{background:#111b21;border:1px solid #1d2a33;border-radius:10px;
-  padding:8px 13px;min-width:88px}}
-.sim-fact b{{display:block;font-size:17px;color:#4ade80;line-height:1.2}}
-.sim-fact.no b{{color:#94a3b8;font-size:14px}}
-.sim-fact span{{color:#667781;font-size:11px;text-transform:uppercase;letter-spacing:.4px}}
-.sim-headline{{background:#0a1f16;border-left:3px solid #10b981;border-radius:7px;
-  padding:10px 13px;margin:0 0 14px;color:#d1fae5;font-size:14px}}
-.sim-q{{display:block;color:#4ade80;font-size:10.5px;text-transform:uppercase;
-  letter-spacing:.7px;font-weight:700;margin-bottom:4px}}
-.sim-row{{display:flex;gap:14px;padding:11px 0;border-top:1px solid #1a2c36;flex-wrap:wrap}}
-.sim-k{{flex:0 0 132px;color:#7dd3fc;font-size:11.5px;text-transform:uppercase;
-  letter-spacing:.6px;font-weight:700;padding-top:2px}}
-.sim-v{{flex:1;min-width:220px;color:#c9d8e0}}
-.sim-list{{margin:0;padding-left:19px}}
-.sim-list li{{margin:4px 0}}
-.sim-note{{color:#667781;font-size:12px;margin-top:7px;font-style:italic}}
-.cast-chip{{display:inline-block;background:#13232c;border:1px solid #24404f;color:#a5d8f3;
-  border-radius:11px;padding:3px 10px;margin:0 5px 5px 0;font-size:12.5px;font-weight:600}}
-.sim-warn{{background:#2a1d05;border:1px solid #713f12;color:#fde68a;border-radius:9px;
-  padding:11px 14px;margin:12px 0;font-size:13.5px}}
-.sim-warn b{{color:#fbbf24}}
-.sim-trust{{display:flex;gap:20px;flex-wrap:wrap}}
-.sim-trust>div{{flex:1;min-width:190px}}
-.tr-good{{color:#4ade80;font-size:11.5px;font-weight:800;text-transform:uppercase;
-  letter-spacing:.5px;margin-bottom:5px}}
-.tr-bad{{color:#f87171;font-size:11.5px;font-weight:800;text-transform:uppercase;
-  letter-spacing:.5px;margin:10px 0 5px}}
-@media(max-width:640px){{
-  .sim-k{{flex:0 0 100%}}
-  .sim-intro{{padding:13px 14px;font-size:14px}}
-}}
+.sx{{max-width:66ch;margin:0 0 34px;padding:0 0 26px;border-bottom:1px solid #25313b;
+  color:#e8e2d4;font:16px/1.6 'Atkinson Hyperlegible',-apple-system,'Segoe UI',sans-serif}}
+.sx p{{margin:0 0 12px}}
+.sx a{{color:#e8e2d4}}
+.sx-lede{{font:400 26px/1.3 'Newsreader',Georgia,serif;margin-bottom:10px!important}}
+.sx h3{{font-size:14px;font-weight:700;color:#8b979f;margin:18px 0 6px}}
+.sx ul{{margin:0;padding-left:20px}} .sx li{{margin:3px 0}}
+.sx-note{{color:#8b979f;font-size:14px}}
+.sx-check{{border-left:3px solid #8b979f;padding:4px 0 4px 14px;margin:18px 0}}
+.sx-check p{{margin:0 0 4px}}
+.sx-label{{font-weight:700}}
+.sx-check.usable{{border-color:#f0c64a}} .sx-check.usable .sx-label{{color:#f0c64a}}
+.sx-check.thin{{border-color:#7fa8d6}} .sx-check.thin .sx-label{{color:#7fa8d6}}
+.sx-check.off_topic{{border-color:#e48a78}} .sx-check.off_topic .sx-label{{color:#e48a78}}
+.sx-warn{{color:#8b979f;font-size:14.5px}}
+.sx-trust{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
+@media(max-width:640px){{.sx-trust{{grid-template-columns:1fr}} .sx-lede{{font-size:22px}}}}
 </style>"""

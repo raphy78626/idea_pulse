@@ -26,6 +26,7 @@ MIN_REPORT_CHARS = 200
 MIN_NAMED_ACTORS = 3
 SKILL_SCRIPTS = Path.home() / ".hermes" / "skills" / "mlops" / "foresight" / "scripts"
 STAGE_TIMEOUT_S = 1500
+MAX_ROUNDS = 12          # role-play rounds per simulation
 REPORT_RETRY_ATTEMPTS = 8
 REPORT_RETRY_WAIT_S = 5
 MAX_TITLE_CHARS = 400
@@ -404,7 +405,7 @@ def run_simulation(title, meta, source, on_stage=None, out_path=None, evaluation
             if not data.get("graph_id"):
                 raise BridgeError("graph build returned no graph id")
         elif stage == "simulate":
-            data = run_stage(["simulate", "--project-id", project_id, "--max-rounds", "12"])
+            data = run_stage(["simulate", "--project-id", project_id, "--max-rounds", str(MAX_ROUNDS)])
             simulation_id = str(data.get("simulation_id") or "")
             if not simulation_id:
                 raise BridgeError("simulation stage returned no simulation id")
