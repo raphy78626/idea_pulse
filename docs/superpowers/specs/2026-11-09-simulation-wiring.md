@@ -2,6 +2,13 @@
 
 *Written 2026-11-09 after building and live-testing the MiroFish integration.*
 
+> **Paused 2026-11-13.** `app.py simulate 3` was removed from the 9:00 cron line;
+> the code, routes and the 🎭 button still work on demand. Reason: simulated
+> reactions have never been compared with real outreach replies, so they must not
+> gate ideas yet. Resume once a few ideas have real contacted → replied numbers to
+> check the simulations against. To restore, add
+> `; <python> app.py simulate 3 >> /tmp/ideapulse.log 2>&1` back before `; open …`.
+
 ---
 
 ## What runs, and when

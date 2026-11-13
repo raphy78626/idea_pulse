@@ -37,7 +37,8 @@ def db():
                 "ttm_days INTEGER", "what TEXT", "reason TEXT", "report_path TEXT", "nutshell TEXT",
                 "pitch TEXT", "capital INTEGER", "first_payment TEXT", "earn_verdict TEXT",
                 "proof TEXT", "buyer TEXT", "offer_money TEXT", "sim_path TEXT",
-                "sim_attempts INTEGER DEFAULT 0", "sim_error TEXT"):
+                "sim_attempts INTEGER DEFAULT 0", "sim_error TEXT",
+                "body TEXT", "author TEXT"):
         try:
             conn.execute(f"ALTER TABLE items ADD COLUMN {col}")
         except Exception:
@@ -51,14 +52,21 @@ def engagement(meta):
 
 
 def save_items(source, items):
+    """Insert new items; returns how many were new.
+
+    Each item is (title, url, meta, kind) or, for sources that have the full
+    post, (title, url, meta, kind, body, author).
+    """
     conn = db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     n = 0
-    for title, url, meta, kind in items:
+    for item in items:
+        title, url, meta, kind = item[:4]
+        body, author = (tuple(item[4:6]) + (None, None))[:2]
         score = sum(2 for w in HOT_WORDS if w in title.lower())
-        cur = conn.execute("INSERT OR IGNORE INTO items (fetched_on, source, title, url, meta, score, kind, eng)"
-                           " VALUES (?,?,?,?,?,?,?,?)",
-                           (now, source, title, url, meta, score, kind, engagement(meta)))
+        cur = conn.execute("INSERT OR IGNORE INTO items (fetched_on, source, title, url, meta, score, kind, eng,"
+                           " body, author) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (now, source, title, url, meta, score, kind, engagement(meta), body, author))
         n += max(0, cur.rowcount)
     conn.commit()
     conn.close()
@@ -91,21 +99,32 @@ def fetch_github(client):
 
 
 def fetch_reddit(client):
+    # reddit.com has answered 403 from this machine since mid-October. Count the
+    # failures so a fully blocked run raises (dashboard: FAILED) instead of
+    # returning [] and being reported as "ok". Pain posts come from
+    # pain_harvest.py via Arctic Shift instead.
     items = []
+    ok_subs, last_err = 0, ""
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
     for sub in SUBREDDITS:
         for host in ("https://www.reddit.com", "https://old.reddit.com"):
             try:
                 r = client.get(f"{host}/r/{sub}/top.json?t=day&limit=10", headers=headers, timeout=10)
                 if r.status_code != 200:
+                    last_err = f"HTTP {r.status_code}"
                     continue
-                for c in r.json().get("data", {}).get("children", []):
+                children = r.json().get("data", {}).get("children", [])
+                for c in children:
                     d = c["data"]
                     items.append((d["title"], f"https://reddit.com{d['permalink']}",
                                   f"r/{sub} · {d['score']} ↑ · {d['num_comments']} comments", "post"))
+                ok_subs += 1   # only after the body parsed as a real listing
                 break
-            except Exception:
+            except Exception as e:
+                last_err = type(e).__name__
                 continue
+    if SUBREDDITS and not ok_subs:
+        raise RuntimeError(f"every subreddit failed ({last_err})")
     return items
 
 
@@ -244,6 +263,12 @@ def discover_sources():
     srcs = [("HN Show HN", fetch_hn), ("Ask HN ideas", fetch_askhn), ("GitHub Trending", fetch_github),
             ("Reddit", fetch_reddit), ("Product Hunt", fetch_ph), ("dev.to", fetch_devto),
             ("Google Trends IN", fetch_gtrends)]
+    # pain posts (people describing a problem) — the source the plan is built on
+    try:
+        import pain_harvest
+        srcs.append(("Reddit pains", pain_harvest.fetch))
+    except Exception:
+        pass
     # launch directories that expose real product data (see launch_scrape.py)
     try:
         import launch_scrape
@@ -306,8 +331,12 @@ def fetch_all():
     with httpx.Client(headers=UA, timeout=15, follow_redirects=True) as client:
         for name, fn in discover_sources():
             try:
-                n = save_items(name, fn(client))
-                set_status(name, "ok", n)
+                fetched = fn(client)
+                n = save_items(name, fetched)
+                # n counts only NEW rows, so 0 can be healthy (nothing new today).
+                # A source that returned nothing at all is broken or blocked, and
+                # must not be reported as "ok" (Reddit sat at "ok +0" for a month).
+                set_status(name, "ok" if fetched else "EMPTY: returned nothing", n)
                 report.append(f"{name}: +{n}")
                 total += n
             except Exception as e:
@@ -1382,7 +1411,7 @@ def dashboard(page: int = 0, filter: str = "all", source: str = "all"):
                              for so in sources)
                    + "</div>")
     filters_ui += ('<div class="srcstat">'
-                   + "".join(f'<span class="ss {"bad" if "FAIL" in st["status"] or "skipped" in st["status"] else ""}">'
+                   + "".join(f'<span class="ss {"bad" if any(w in st["status"] for w in ("FAIL", "EMPTY", "skipped")) else ""}">'
                              f'{st["source"][:28]}: {st["status"]} (+{st["count"]} @ {st["last_run"]})</span>'
                              for st in src_status)
                    + "</div>")
