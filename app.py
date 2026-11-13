@@ -1600,6 +1600,20 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "evaluate":
         n, used = evaluate_items(int(sys.argv[2]) if len(sys.argv) > 2 else 25)
         print(f"[{datetime.now()}] evaluated {n} items | models: {json.dumps(used)}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "extract":
+        # stage 2: pain post -> structured pain with a verified quote (pain_extract.py)
+        import pain_extract
+        conn = db()
+        nums = [a for a in sys.argv[2:] if a.isdigit()]
+        s = pain_extract.run(
+            conn, limit=int(nums[0]) if nums else 40, redo="--redo" in sys.argv,
+            progress=lambda i, t, p: print("  %-10s %d  %s" % (p["status"], i, (t or "")[:70]),
+                                           flush=True))
+        left = len(pain_extract.pending(conn))
+        conn.close()
+        print("[%s] extract: done=%d pain=%d unverified=%d builder=%d not_pain=%d error=%d"
+              " | pending=%d" % (datetime.now(), s["done"], s["PAIN"], s["UNVERIFIED"],
+                                 s["BUILDER"], s["NOT_PAIN"], s["ERROR"], left))
     elif len(sys.argv) > 1 and sys.argv[1] == "simulate":
         dry = "--dry-run" in sys.argv
         sim_limit = 3
