@@ -1,0 +1,9 @@
+# Runtime dependencies for IdeaPulse (FastAPI app + scrapers + OpenRouter/Ollama HTTP client).
+# Note: IdeaPulse intentionally parses urlencoded forms with stdlib urllib.parse so it does not
+# require python-multipart on macOS system Python (/usr/bin/python3).
+# Optional external runtimes (kept in their own environments, not installed here):
+#   - Ollama (local fallback model, default qwen3:8b)
+#   - Hermes / MiroFish foresight CLI (invoked over subprocess by mirofish_bridge.py)
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0
+httpx>=0.27,<1.0

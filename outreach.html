@@ -61,7 +61,7 @@
     <div class="field"><label for="f-biz">Business</label><input id="f-biz" name="business" placeholder="Maurya Dental"></div>
     <div class="field"><label for="f-phone">WhatsApp number</label><input id="f-phone" name="phone" placeholder="9198xxxxxxxx" inputmode="tel"></div>
     <div class="field"><label for="f-tpl">Message</label>
-      <select id="f-tpl" name="template"><option value="hinglish_dental">Hinglish clinic message</option><option value="english_dental">English clinic message</option><option value="followup">Follow-up</option><option value="idea_pitch">Idea pitch</option></select></div>
+      <select id="f-tpl" name="template"><option value="hinglish_dental">Hinglish clinic message</option><option value="english_dental">English clinic message</option><option value="followup">Follow-up</option><option value="idea_pitch">Idea pitch</option><option value="pain_reply">Reddit pain reply / DM</option></select></div>
     <div class="field"><label for="f-fu">Follow up on</label><input id="f-fu" name="followup" type="date"></div>
     <div class="field wide"><label for="f-notes">Notes</label><input id="f-notes" name="notes" placeholder="Area, where you found them"></div>
     <button type="submit" class="btn">Add prospect</button>
@@ -81,11 +81,13 @@ async function copyMsg(el){
 if (window.__PREFILL__) {
   const p = window.__PREFILL__;
   const sel = document.querySelector('select[name=template]');
-  if (sel) sel.value = p.template;
+  if (sel && p.template) sel.value = p.template;
+  const name = document.querySelector('input[name=name]');
+  if (name && p.name) name.value = p.name;
   const notes = document.querySelector('input[name=notes]');
-  if (notes) notes.value = p.notes;
+  if (notes && p.notes) notes.value = p.notes;
   const biz = document.querySelector('input[name=business]');
-  if (biz) biz.value = p.idea;
+  if (biz) biz.value = p.business || p.idea || '';
 }
 </script>
 </body></html>

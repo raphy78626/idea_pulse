@@ -46,18 +46,25 @@ def _key():
 
 
 def parse_json(text):
-    """Model JSON is often fenced, padded with prose, or has raw newlines in strings."""
+    """Extract the first JSON object from model output.
+
+    Models often fence JSON, wrap it in prose (which may contain stray braces),
+    emit raw newlines inside strings, or leave trailing commas.
+    """
     if not text:
         return None
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    raw = re.sub(r",\s*([}\]])", r"\1", m.group(0))
-    try:
-        return json.loads(raw, strict=False)
-    except ValueError:
-        return None
+    dec = json.JSONDecoder(strict=False)
+    for m in re.finditer(r"\{", text):
+        chunk = text[m.start():]
+        for candidate in (chunk, re.sub(r",\s*([}\]])", r"\1", chunk)):
+            try:
+                obj, _ = dec.raw_decode(candidate)
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
 
 
 def _post(model, system, user, max_tokens, timeout):

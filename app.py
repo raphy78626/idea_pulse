@@ -405,10 +405,39 @@ MONEY_SYSTEM = (
     "NO = too slow, too regulated, needs a team, or the input is just chat with no offer.")
 
 
-def _money_call(title, meta, source=""):
-    """First-currency evaluation. Returns (dict, model)."""
-    prompt = (f"Opportunity: {title}\nSource: {source}\nContext: {meta}\n\n"
-              "What could this person sell, to whom, for how much, and how fast?")
+def _money_call(title, meta, source="", body="", pain=None):
+    """First-currency evaluation. Returns (dict, model).
+
+    When `pain` (a verified row from `pains`) or `body` is supplied, pass the
+    buyer's actual persona, job, workaround, cost/pay signals and verbatim quote
+    instead of guessing from a title alone.
+    """
+    lines = [f"Opportunity: {title}", f"Source: {source}"]
+    if meta:
+        lines.append(f"Context: {meta}")
+    if pain:
+        for label, key in (
+            ("Buyer persona", "persona"),
+            ("Job to be done", "job"),
+            ("Current workaround", "workaround"),
+            ("Named tools", "tools"),
+            ("Cost of problem", "cost_signal"),
+            ("Willingness-to-pay signal", "pay_signal"),
+            ("Verified quote", "quote"),
+        ):
+            val = pain.get(key)
+            if isinstance(val, list):
+                val = ", ".join(str(x) for x in val if x)
+            elif isinstance(val, str) and key == "tools" and val.startswith("["):
+                try:
+                    val = ", ".join(str(x) for x in json.loads(val) if x)
+                except ValueError:
+                    pass
+            if val:
+                lines.append(f"{label}: {val}")
+    if body:
+        lines.append(f"Post excerpt: {str(body).strip()[:1500]}")
+    prompt = "\n".join(lines) + "\n\nWhat could this person sell, to whom, for how much, and how fast?"
     txt, model = _or_chat(MONEY_SYSTEM, prompt, max_tokens=4000, timeout=120, want_json=True)
     d = parse_json(txt)
     if not d:
@@ -455,21 +484,35 @@ def _money_call(title, meta, source=""):
 
 def evaluate_money(limit=20, sources=None):
     """Evaluate opportunities for the first-currency question."""
+    import pain_extract
     conn = db()
+    pain_extract.ensure_table(conn)
     conn.row_factory = sqlite3.Row
-    where = "(earn_verdict IS NULL OR earn_verdict='ERROR')"
+    where = ("(i.earn_verdict IS NULL OR i.earn_verdict='ERROR')"
+             " AND (p.status IS NULL OR p.status='PAIN')")
     params = []
     if sources:
         marks = ",".join("?" * len(sources))
-        where += f" AND source IN ({marks})"
+        where += f" AND (i.source IN ({marks}) OR p.status='PAIN')"
         params.extend(sources)
-    rows = conn.execute(f"""SELECT id, title, meta, source FROM items
-        WHERE {where} ORDER BY verdict IS NULL, score DESC, eng DESC LIMIT ?""",
+    rows = conn.execute(
+        f"""SELECT i.id, i.title, i.meta, i.source, i.body,
+                   p.status AS pain_status, p.persona, p.job, p.workaround,
+                   p.tools, p.cost_signal, p.pay_signal, p.quote
+            FROM items i LEFT JOIN pains p ON p.item_id = i.id
+            WHERE {where}
+            ORDER BY CASE WHEN p.status='PAIN' THEN 0 ELSE 1 END,
+                     i.verdict IS NULL, i.score DESC, i.eng DESC LIMIT ?""",
         params + [limit]).fetchall()
     conn.close()
     used = {}
     for r in rows:
-        d, model = _money_call(r["title"], r["meta"], r["source"])
+        pain = None
+        if r["pain_status"] == "PAIN":
+            pain = {k: r[k] for k in ("persona", "job", "workaround", "tools",
+                                      "cost_signal", "pay_signal", "quote")}
+        d, model = _money_call(r["title"], r["meta"], r["source"],
+                               body=r["body"] or "", pain=pain)
         used[model] = used.get(model, 0) + 1
         c = db()
         c.execute("""UPDATE items SET earn_verdict=?, what=COALESCE(NULLIF(what,''), ?),
@@ -695,6 +738,9 @@ TEMPLATES = {
         "{name} ji, quick follow-up - no pressure. Last week I installed this for a clinic and they stopped losing after-hours inquiries entirely. If timing is wrong, just reply later and I will not ping again.\n\n{link}"),
     "idea_pitch": ("Pitch a productized idea",
         "Hi {name}, I am building {idea} - early birds get it at {price}. First 3 customers get lifetime updates. Interested? 2-min demo: {link}"),
+    "pain_reply": ("Reddit pain reply / DM",
+        "Hi {name}, saw your post about {idea}. I've been helping {business} cut out this exact manual step.\n\n"
+        "Happy to do a quick done-for-you pass on one real example first so you can see if it actually saves time — no upfront pitch. Want to try it?"),
 }
 
 STATUSES = ["new", "contacted", "replied", "call", "won", "dead"]
@@ -750,21 +796,53 @@ def _outreach_page(name="", status="all", prefill=0):
     prefill_js = ""
     if prefill:
         ic = db(); ic.row_factory = sqlite3.Row
-        idea = ic.execute("SELECT title, url, pitch FROM items WHERE id=?", (prefill,)).fetchone()
+        idea = ic.execute("SELECT title, url, pitch, author FROM items WHERE id=?", (prefill,)).fetchone()
+        pain_row = None
+        if idea:
+            has_pains = ic.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pains'").fetchone()
+            if has_pains:
+                pain_row = ic.execute(
+                    "SELECT status, persona, job, quote FROM pains WHERE item_id=?", (prefill,)).fetchone()
         ic.close()
         if idea:
-            ptitle = (idea["title"] or "")[:120].replace('"', "").replace("'", "")
-            def _js(s):
-                return (s or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-            notes = (_js(idea["pitch"]) if idea["pitch"]
-                     else f"Pitch: {ptitle} (source: {idea['url']})")
-            prefill_js = ('<script>window.__PREFILL__={template:"idea_pitch",'
-                          f'notes:"{notes}",'
-                          'idea:"' + _js(ptitle[:80]) + '"};</script>')
+            if pain_row and pain_row["status"] == "PAIN":
+                author = (idea["author"] or "").strip()
+                lead_name = f"u/{author}" if author and author not in ("[deleted]", "[removed]") else ""
+                parts = []
+                if pain_row["job"]:
+                    parts.append("Job: " + pain_row["job"])
+                if pain_row["quote"]:
+                    parts.append('Quote: "' + pain_row["quote"] + '"')
+                if idea["url"]:
+                    parts.append("Thread: " + idea["url"])
+                payload = {
+                    "template": "pain_reply",
+                    "name": lead_name,
+                    "business": (pain_row["persona"] or "")[:120],
+                    "notes": " | ".join(parts),
+                    "idea": (pain_row["job"] or idea["title"] or "")[:80],
+                }
+            else:
+                ptitle = (idea["title"] or "")[:120]
+                notes = idea["pitch"] if idea["pitch"] else f"Pitch: {ptitle} (source: {idea['url']})"
+                payload = {
+                    "template": "idea_pitch",
+                    "name": "",
+                    "business": ptitle[:80],
+                    "notes": notes,
+                    "idea": ptitle[:80],
+                }
+            prefill_js = "<script>window.__PREFILL__=" + json.dumps(payload).replace("</", "<\\/") + ";</script>"
     cards = ""
     for r in rows:
         tname, ttext = TEMPLATES.get(r["template"], list(TEMPLATES.values())[0])
-        idea_txt = r["notes"].replace("Pitch: ", "") if (r["notes"] or "").startswith("Pitch: ") else "a new micro-product"
+        notes_raw = r["notes"] or ""
+        if notes_raw.startswith("Job: "):
+            idea_txt = notes_raw[5:].split(" | ", 1)[0]
+        elif notes_raw.startswith("Pitch: "):
+            idea_txt = notes_raw.replace("Pitch: ", "", 1)
+        else:
+            idea_txt = "a new micro-product"
         msg = (ttext.replace("{name}", r["name"] or "there").replace("{business}", r["business"] or "your business")
                 .replace("{link}", demo_link() or "(demo link coming)")
                 .replace("{idea}", idea_txt[:90]).replace("{price}", "999"))
@@ -773,11 +851,16 @@ def _outreach_page(name="", status="all", prefill=0):
             phone = "91" + phone
         phone = phone if len(phone) >= 10 else ""
         wa = ("https://wa.me/" + phone + "?text=" + quote(msg)) if phone else ""
+        thread_m = re.search(r"https?://[^\s|)\"'>]+", notes_raw)
         is_due = bool(r["followup"] and r["followup"] <= due and r["status"] not in ("won", "dead"))
         due_line = ('<p class="due">Follow up today</p>' if is_due else
                     ('<p class="when">Follow up on ' + esc(r["followup"]) + '</p>' if r["followup"] else ""))
-        wa_btn = ('<a class="btn" href="' + esc(wa) + '" target="_blank" rel="noopener">Open in WhatsApp</a>'
-                  if phone else '<span class="nophone">No phone number yet</span>')
+        if phone:
+            wa_btn = '<a class="btn" href="' + esc(wa) + '" target="_blank" rel="noopener">Open in WhatsApp</a>'
+        elif thread_m:
+            wa_btn = '<a class="btn" href="' + esc(thread_m.group(0)) + '" target="_blank" rel="noopener">Open thread</a>'
+        else:
+            wa_btn = '<span class="nophone">No phone number yet</span>'
         cur = STAGES.index(r["status"]) if r["status"] in STAGES else -1
         stages = "".join(
             '<li class="' + ("past" if i < cur else ("now" if i == cur else "")) + '">'
@@ -1763,4 +1846,4 @@ if __name__ == "__main__":
                 sys.exit(1)
     else:
         import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8300)
+        uvicorn.run(app, host="127.0.0.1", port=8300)

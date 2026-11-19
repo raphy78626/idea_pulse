@@ -49,14 +49,24 @@ def esc(s):
     return html.escape(str(s or ""), quote=True)
 
 
+def _existing_leads(conn, have):
+    """Return (lowercased prospect names, list of prospect notes) to detect already-added leads."""
+    if "prospects" not in have:
+        return set(), []
+    rows = conn.execute("SELECT name, notes FROM prospects").fetchall()
+    names = {(r[0] or "").strip().lower() for r in rows if (r[0] or "").strip()}
+    notes = [(r[1] or "") for r in rows if r[1]]
+    return names, notes
+
+
 def _load(status):
-    """(rows for this tab, counts per status). Empty if extraction never ran."""
+    """(rows for this tab, counts per status, existing_leads). Empty if extraction never ran."""
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     try:
         have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not {"items", "pains"} <= have:
-            return [], {}
+            return [], {}, (set(), [])
         counts = dict(conn.execute("SELECT status, COUNT(*) FROM pains GROUP BY status").fetchall())
         where, params = "", []
         if status:
@@ -64,7 +74,8 @@ def _load(status):
         rows = conn.execute(
             "SELECT i.id, i.title, i.url, i.meta, i.author, p.* FROM pains p"
             " JOIN items i ON i.id = p.item_id " + where + " ORDER BY i.id DESC", params).fetchall()
-        return rows, counts
+        leads = _existing_leads(conn, have)
+        return rows, counts, leads
     finally:
         conn.close()
 
@@ -102,7 +113,16 @@ def _fact(label, value):
     return f"<dt>{label}</dt><dd>{esc(value)}</dd>" if value else ""
 
 
-def _entry(r, show_status):
+def _in_outreach(r, leads):
+    names, notes = leads
+    author = (r["author"] or "").strip().lower()
+    if author and (f"u/{author}" in names or author in names):
+        return True
+    url = (r["url"] or "").strip()
+    return bool(url and any(url in n for n in notes))
+
+
+def _entry(r, show_status, leads=(set(), [])):
     st = r["status"] or ""
     kind = KIND.get(st, "other")
     if r["quote"]:
@@ -115,6 +135,12 @@ def _entry(r, show_status):
              + (_fact("Error", r["error"]) if st == "ERROR" else ""))
     tools = "".join(f'<a class="tool" href="/pains?status=all&amp;tool={esc(urlquote(t.lower()))}">{esc(t)}</a>'
                     for t in _tools(r))
+    action = ""
+    if st == "PAIN":
+        if _in_outreach(r, leads):
+            action = '<p class="acts"><a class="lead-done" href="/outreach">In outreach</a></p>'
+        else:
+            action = f'<p class="acts"><a class="lead-btn" href="/outreach?prefill={r["id"]}">Add as lead</a></p>'
     return (
         f'<article class="entry {kind}">'
         f'{lead}'
@@ -123,6 +149,7 @@ def _entry(r, show_status):
         + f'<p class="src"><a class="post" href="{esc(r["url"])}" target="_blank" rel="noopener">{esc(r["title"])}</a>'
         f'<span class="where">{esc(_source(r))}</span></p>'
         + (f'<p class="tools">{tools}</p>' if tools else "")
+        + action
         + '</article>')
 
 
@@ -143,7 +170,7 @@ def _headline(counts):
 @router.get("/pains", response_class=HTMLResponse)
 def pains(status: str = "pain", tool: str = ""):
     tab = next((t for t in TABS if t[0] == status), TABS[0])
-    rows, counts = _load(tab[1])
+    rows, counts, leads = _load(tab[1])
     tally = _tally(rows)
     tool = tool.strip().lower()
     if tool:
@@ -168,7 +195,7 @@ def pains(status: str = "pain", tool: str = ""):
                   + '</aside>') if tally else ""
 
     filtered = f'<p class="filter">Posts naming <b>{esc(tool)}</b></p>' if tool else ""
-    entries = "".join(_entry(r, tab[1] is None or bool(tool)) for r in rows) or (
+    entries = "".join(_entry(r, tab[1] is None or bool(tool), leads) for r in rows) or (
         '<div class="empty"><p>Nothing to read here yet.</p>'
         '<p>Run <code>python app.py extract 60</code> after a fetch, or wait for the 9:00 run.</p></div>')
 
@@ -222,6 +249,12 @@ dd{color:var(--ink)}
 .tools{margin-top:10px;display:flex;gap:6px 14px;flex-wrap:wrap}
 .tool{font-size:13px;color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--faint)}
 .tool:hover{color:var(--ink)}
+.acts{margin-top:12px}
+.lead-btn{font-size:13.5px;font-weight:700;color:var(--mark);text-decoration:none;
+  border-bottom:1px solid var(--faint);padding-bottom:1px}
+.lead-btn:hover{border-bottom-color:var(--mark)}
+.lead-done{font-size:13px;color:var(--muted);text-decoration:none}
+.lead-done:hover{color:var(--ink)}
 
 @media (max-width:860px){
   .layout{grid-template-columns:1fr;gap:24px;margin-top:22px}

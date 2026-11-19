@@ -36,7 +36,9 @@ def esc(s):
 
 
 def _conn():
+    import pain_extract
     conn = sqlite3.connect(DB)
+    pain_extract.ensure_table(conn)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -46,31 +48,40 @@ def _rows(lane, verdict, order):
     marks = ",".join("?" * len(OPPORTUNITY_SOURCES))
     where, params = [], []
 
-    if lane == "opportunities":
-        where.append(f"source IN ({marks})")
-        params.extend(OPPORTUNITY_SOURCES)
+    if lane == "pains":
+        where.append("p.status = 'PAIN'")
     elif lane == "products":
         m2 = ",".join("?" * len(PRODUCT_SOURCES))
-        where.append(f"source IN ({m2})")
+        where.append(f"i.source IN ({m2})")
         params.extend(PRODUCT_SOURCES)
-        where.append("verdict IN ('BUILD','WATCH')")
+        where.append("i.verdict IN ('BUILD','WATCH')")
+    else:
+        # default ("opportunities"): business/demand lanes plus verified pains,
+        # strictly excluding builders/not-pain rows from `pains`.
+        where.append(f"(i.source IN ({marks}) OR p.status = 'PAIN')")
+        where.append("(p.status IS NULL OR p.status = 'PAIN')")
+        params.extend(OPPORTUNITY_SOURCES)
 
     if verdict == "go":
-        where.append("earn_verdict='GO'")
+        where.append("i.earn_verdict='GO'")
     elif verdict == "later":
-        where.append("earn_verdict='LATER'")
+        where.append("i.earn_verdict='LATER'")
     elif verdict == "pending":
-        where.append("(earn_verdict IS NULL OR earn_verdict='ERROR')")
+        where.append("(i.earn_verdict IS NULL OR i.earn_verdict='ERROR')")
 
     wsql = ("WHERE " + " AND ".join(where)) if where else ""
     ordsql = {
-        "quickest": "ORDER BY CASE WHEN first_payment>0 THEN 0 ELSE 1 END, first_payment, capital",
-        "cheapest": "ORDER BY capital, first_payment",
-        "hottest": "ORDER BY eng DESC, score DESC",
-    }.get(order, "ORDER BY CASE earn_verdict WHEN 'GO' THEN 0 WHEN 'LATER' THEN 1 "
-                   "WHEN 'NO' THEN 3 ELSE 2 END, first_payment, eng DESC")
-    rows = conn.execute(f"SELECT * FROM items {wsql} {ordsql} LIMIT 120",
-                        params).fetchall()
+        "quickest": "ORDER BY CASE WHEN i.first_payment>0 THEN 0 ELSE 1 END, i.first_payment, i.capital",
+        "cheapest": "ORDER BY i.capital, i.first_payment",
+        "hottest": "ORDER BY i.eng DESC, i.score DESC",
+    }.get(order, "ORDER BY CASE i.earn_verdict WHEN 'GO' THEN 0 WHEN 'LATER' THEN 1 "
+                   "WHEN 'NO' THEN 3 ELSE 2 END, i.first_payment, i.eng DESC")
+    rows = conn.execute(
+        f"""SELECT i.*, p.status AS pain_status, p.persona AS pain_persona,
+                   p.job AS pain_job, p.quote AS pain_quote
+            FROM items i LEFT JOIN pains p ON p.item_id = i.id
+            {wsql} {ordsql} LIMIT 120""",
+        params).fetchall()
     conn.close()
     return rows
 
@@ -78,9 +89,13 @@ def _rows(lane, verdict, order):
 def _stats():
     conn = _conn()
     marks = ",".join("?" * len(OPPORTUNITY_SOURCES))
-    rows = conn.execute(f"""SELECT earn_verdict, COUNT(*) c FROM items
-                            WHERE source IN ({marks}) GROUP BY earn_verdict""",
-                        OPPORTUNITY_SOURCES).fetchall()
+    rows = conn.execute(
+        f"""SELECT i.earn_verdict, COUNT(*) c
+            FROM items i LEFT JOIN pains p ON p.item_id = i.id
+            WHERE (i.source IN ({marks}) OR p.status = 'PAIN')
+              AND (p.status IS NULL OR p.status = 'PAIN')
+            GROUP BY i.earn_verdict""",
+        OPPORTUNITY_SOURCES).fetchall()
     conn.close()
     return {r[0]: r[1] for r in rows}
 
@@ -118,18 +133,22 @@ def _card(r):
     verdict = f'<p class="verdict"><span class="vw">{VERDICT_WORDS.get(v, "Not checked yet.")}</span>{esc(detail)}</p>'
 
     facts = "".join(f"<dt>{label}</dt><dd>{esc(val)}</dd>" for label, val in (
-        ("Sell", g("what")), ("To", g("buyer")), ("Price", g("offer_money")),
-        ("Why", g("reason")), ("Evidence", PROOF_WORDS.get((g("proof") or "").lower(), ""))) if val)
+        ("Sell", g("what")), ("To", g("buyer") or g("pain_persona")), ("Price", g("offer_money")),
+        ("Why", g("reason")), ("Quote", g("pain_quote")),
+        ("Evidence", PROOF_WORDS.get((g("proof") or "").lower(), ""))) if val)
     meta = (g("meta") or "").replace(" · ", ", ")
     meta = meta if len(meta) <= 140 else meta[:137].rstrip(" ,") + "…"
     where = ", ".join(x for x in (g("source"), meta) if x)
+    item_id = g("id")
+    action = (f'<p class="acts"><a class="lead-link" href="/outreach?prefill={item_id}">'
+              f'Add to outreach</a></p>') if item_id else ""
 
     return (f'<article class="entry {TIER.get(v, "off")}">'
             f'<h2><a class="tl" href="{esc(g("url"))}" target="_blank" rel="noopener">'
             f'<mark>{esc((g("title") or "")[:160])}</mark></a></h2>'
             f'{verdict}'
             + (f'<dl class="facts">{facts}</dl>' if facts else "")
-            + f'<p class="meta">{esc(where)}</p></article>')
+            + f'<p class="meta">{esc(where)}</p>{action}</article>')
 
 
 @router.post("/money/scrape")
@@ -168,27 +187,40 @@ def money_scrape(async_: int = 0):
 @router.post("/money/evaluate")
 @router.get("/money/evaluate")
 def money_evaluate(limit: int = 12, async_: int = 0):
-    """Score opportunities for the first-currency question."""
+    """Score opportunities (including verified pains, never builders) for the first-currency question."""
     import app as ip
     import jobs
+    import pain_extract
 
     limit = max(1, min(limit, 40))
     srcs = OPPORTUNITY_SOURCES + PRODUCT_SOURCES
 
     def work(tick, label):
         conn = ip.db()
+        pain_extract.ensure_table(conn)
         conn.row_factory = sqlite3.Row
         marks = ",".join("?" * len(srcs))
         rows = conn.execute(
-            f"""SELECT id, title, meta, source FROM items
-                WHERE source IN ({marks}) AND (earn_verdict IS NULL OR earn_verdict='ERROR')
-                ORDER BY verdict IS NULL, score DESC, eng DESC LIMIT ?""",
+            f"""SELECT i.id, i.title, i.meta, i.source, i.body,
+                       p.status AS pain_status, p.persona, p.job, p.workaround,
+                       p.tools, p.cost_signal, p.pay_signal, p.quote
+                FROM items i LEFT JOIN pains p ON p.item_id = i.id
+                WHERE ((i.source IN ({marks}) AND (p.status IS NULL OR p.status='PAIN'))
+                       OR p.status = 'PAIN')
+                  AND (i.earn_verdict IS NULL OR i.earn_verdict='ERROR')
+                ORDER BY CASE WHEN p.status='PAIN' THEN 0 ELSE 1 END,
+                         i.verdict IS NULL, i.score DESC, i.eng DESC LIMIT ?""",
             (*srcs, limit)).fetchall()
         conn.close()
         used = {}
         for i, r in enumerate(rows, 1):
             label(f"{i}/{len(rows)} · {r['title'][:58]}")
-            d, model = ip._money_call(r["title"], r["meta"], r["source"])
+            pain = None
+            if r["pain_status"] == "PAIN":
+                pain = {k: r[k] for k in ("persona", "job", "workaround", "tools",
+                                          "cost_signal", "pay_signal", "quote")}
+            d, model = ip._money_call(r["title"], r["meta"], r["source"],
+                                      body=r["body"] or "", pain=pain)
             used[model] = used.get(model, 0) + 1
             c = ip.db()
             c.execute("""UPDATE items SET earn_verdict=?, what=COALESCE(NULLIF(what,''), ?),
@@ -227,7 +259,8 @@ def money_page(lane: str = "opportunities", verdict: str = "all", order: str = "
 
     tabs = "".join(
         f'<a class="tab" href="{link(key, "all")}"{" aria-current=page" if lane == key else ""}>{label}</a>'
-        for key, label in (("opportunities", "Opportunities"), ("products", "Buildable products")))
+        for key, label in (("opportunities", "Opportunities"), ("pains", "Verified pains"),
+                           ("products", "Buildable products")))
 
     def opt(kind, key, label):
         cur = {"verdict": verdict, "order": order}[kind] == key
@@ -265,6 +298,10 @@ CSS = """
 .filters+.filters{margin-top:8px}
 .list{margin-top:34px}
 .entry:last-child{border-bottom:0}
+.acts{margin-top:10px}
+.lead-link{font-size:13.5px;font-weight:600;color:var(--mark);text-decoration:none;
+  border-bottom:1px solid var(--faint);padding-bottom:1px}
+.lead-link:hover{border-bottom-color:var(--mark)}
 """
 
 SCRIPT = """<script>
