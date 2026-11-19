@@ -32,17 +32,20 @@ DEFAULT_QUERIES = [
 ]
 
 X_CRITIC_SYSTEM = (
-    "You are a ruthless first-dollar sales critic for a solo software engineer "
+    "You are a ruthless, common-sense first-dollar sales critic for a solo software engineer "
     "(Python, FastAPI, Java, WhatsApp bots, AI/LLM automation) replying on X (Twitter).\n"
+    "THINK TWICE — COMMON-SENSE CHECK FIRST:\n"
+    "- Does the tool already have a trivial free built-in 2-minute fix? Or is this a meme/news/promo/vent with no real buyer intent? "
+    "If yes, you MUST reply VERDICT: SKIP.\n"
     "RULES FOR MESSAGE:\n"
     "- MUST be under 220 characters (fits cleanly in one X reply).\n"
-    "- Be genuinely helpful first: give one sharp actionable tip or workaround, then a soft 'happy to script/build a quick fix if you want, DM me'.\n"
-    "- NO links, NO hashtags, NO prices ($/₹), NO emojis spam, NO corporate hype.\n"
-    "- If the tweet is NOT a real software/workflow pain a solo developer can help with (e.g. memes, crypto, news, complaints about banks/books/politics), reply VERDICT: SKIP.\n"
-    "Reply in this EXACT 3-field format:\n"
+    "- Sound like a real engineer typing casually: mix a very short sentence (3-6 words) with one concrete sentence, use contractions (I'd, don't, it's).\n"
+    "- NO links, NO hashtags, NO prices ($/₹), NO em dashes (—), NO corporate hype or 'feel free to DM' bot sign-offs.\n"
+    "Reply in this EXACT 4-field format:\n"
+    "COMMON_SENSE: 1-line check — is custom help actually needed or is there a trivial free built-in fix / no buyer intent?\n"
     "VERDICT: GO or SKIP — one-line reason\n"
-    "OFFER: concrete small done-for-you deliverable + price to propose if they reply/DM (or 'none' if SKIP)\n"
-    "MESSAGE: the exact under-220-char reply (or 'none' if SKIP)"
+    "OFFER: concrete small done-for-you deliverable + price to propose only if they reply/DM (or 'none' if SKIP)\n"
+    "MESSAGE: the exact casual under-220-char reply (or 'none' if SKIP)"
 )
 
 _BAD_X_MARKERS = (
@@ -366,8 +369,10 @@ def reply_to_tweet(
     daily_cap=DAILY_CAP,
     critic_fn=ask_x_critic,
     post_fn=post_x_reply,
+    humanize_fn=None,
 ):
-    """Critic-gate and (with send=True) post a single helpful reply on X."""
+    """Critic-gate, humanize, and (with send=True) post a single helpful reply on X."""
+    import humanizer
     conn = ro._conn()
     try:
         item = conn.execute(
@@ -392,7 +397,8 @@ def reply_to_tweet(
         conn.close()
 
     if message is not None:
-        parsed = {"parsed": True, "verdict": "GO", "reason": "manual message override", "offer": "", "message": message.strip()}
+        parsed = {"parsed": True, "common_sense": "manual override", "verdict": "GO",
+                  "reason": "manual message override", "offer": "", "message": message.strip()}
         critic_model = "manual"
     else:
         pkt = build_x_review_packet(item_id)
@@ -412,14 +418,33 @@ def reply_to_tweet(
                 "author": item["author"] or "",
                 "thread_url": item["url"],
                 "critic_model": critic_model,
+                "common_sense": parsed.get("common_sense", ""),
                 "verdict": parsed["verdict"],
                 "reason": parsed["reason"],
             }
 
-    valid, verr = validate_x_reply(parsed["message"])
+    if humanize_fn is not None:
+        hum = humanize_fn(parsed["message"])
+    else:
+        rw = None if message is not None else humanizer._default_rewrite
+        hum = humanizer.humanize_reply(parsed["message"], max_chars=220, rewrite_fn=rw)
+    final_msg = hum["text"]
+
+    valid, verr = validate_x_reply(final_msg)
     if not valid:
         return {"ok": False, "error": f"X reply failed hygiene check: {verr}", "code": 2,
-                "draft": parsed["message"]}
+                "draft": final_msg}
+
+    if send and hum["verdict"] != "PASS":
+        return {
+            "ok": False,
+            "error": f"Humanizer gate blocked X send ({hum['human_score']:.1f} {hum['verdict']}; weakest: {hum['weakest']}). Rewrite before sending.",
+            "code": 2,
+            "draft": final_msg,
+            "human_score": hum["human_score"],
+            "human_verdict": hum["verdict"],
+            "human_weakest": hum["weakest"],
+        }
 
     out = {
         "ok": True,
@@ -428,17 +453,21 @@ def reply_to_tweet(
         "author": item["author"] or "",
         "thread_url": item["url"],
         "critic_model": critic_model,
+        "common_sense": parsed.get("common_sense", ""),
         "verdict": parsed["verdict"],
         "reason": parsed["reason"],
         "offer": parsed["offer"],
-        "message": parsed["message"],
+        "message": final_msg,
+        "human_score": hum["human_score"],
+        "human_verdict": hum["verdict"],
+        "human_weakest": hum["weakest"],
         "sent_today": used_today,
         "daily_cap": daily_cap,
     }
     if not send:
         return out
 
-    post_res = post_fn(item["url"], parsed["message"])
+    post_res = post_fn(item["url"], final_msg)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     if not post_res.get("ok"):
         conn = ro._conn()
@@ -447,7 +476,7 @@ def reply_to_tweet(
                 "INSERT INTO outreach_log (item_id, prospect_id, channel, thread_url, author, message, "
                 "critic_model, critic_verdict, posted_url, status, error, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (item_id, None, "x", item["url"], item["author"] or "", parsed["message"],
+                (item_id, None, "x", item["url"], item["author"] or "", final_msg,
                  critic_model, parsed["verdict"], "", "error", post_res.get("error", "X post failed"), now),
             )
             conn.commit()
@@ -467,7 +496,7 @@ def reply_to_tweet(
             "INSERT INTO outreach_log (item_id, prospect_id, channel, thread_url, author, message, "
             "critic_model, critic_verdict, posted_url, status, error, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (item_id, pid, "x", item["url"], item["author"] or "", parsed["message"],
+            (item_id, pid, "x", item["url"], item["author"] or "", final_msg,
              critic_model, parsed["verdict"], post_res.get("posted_url", item["url"]), "sent", "", now),
         )
         conn.commit()
@@ -494,6 +523,7 @@ def run_x_batch(
     critic_fn=ask_x_critic,
     post_fn=post_x_reply,
     sleep_fn=time.sleep,
+    humanize_fn=None,
 ):
     conn = ro._conn()
     try:
@@ -528,6 +558,7 @@ def run_x_batch(
             daily_cap=daily_cap,
             critic_fn=critic_fn,
             post_fn=post_fn,
+            humanize_fn=humanize_fn,
         )
         results.append(r)
         if not r.get("ok"):

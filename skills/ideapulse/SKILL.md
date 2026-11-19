@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [ideapulse, startup, pains, outreach, revenue, leads, autonomous]
     category: research
-    related_skills: [rafi/mirofish, gemini, browser-web/ai-chat]
+    related_skills: [rafi/mirofish, rafi/ig-human, gemini, browser-web/ai-chat]
 ---
 
 # IdeaPulse Skill — First-Dollar Engine
@@ -32,10 +32,10 @@ When you generate real money or close paying work, Rafi funds bigger OpenRouter 
 
 ## Operating Rules & Anti-Ban Discipline
 
-1. **Critic-gated execution, not hesitation paralysis.**
-   - Before acting on a lead, run `~/bin/ideapulse review-packet <item_id>` and send that packet to **logged-in Gemini (`~/bin/gemini-ask`)** or **logged-in ChatGPT** for a ruthless `GO / SKIP` verdict + rewritten human message (<80 words, value-first, non-spammy).
-   - If the critic says `SKIP`, drop the lead and move to the next one.
-   - If the critic says `GO`, log the lead with `~/bin/ideapulse add-lead <item_id>`, execute the outreach via the active channel (browser/WhatsApp/Reddit) within the daily anti-ban limits below, and immediately mark it with `~/bin/ideapulse mark <pid> contacted`.
+1. **Think twice: Common-Sense Gate + `ig-human` PASS gate before every send.**
+   - **Common-Sense Gate:** Before saying `GO`, the critic must check whether the tool already has a trivial free 2-minute built-in fix (e.g. Shopify Bulk Editor / CSV import, Excel filter, native setting). Pitching custom scripts when a free built-in fix exists looks clueless and MUST be `SKIP`.
+   - **Humanizer Gate (`ig-human`):** Every `GO` reply is automatically cleaned by `humanize.py` (strips invisible chars, em dashes, curly quotes, 154 slop terms) and scored by `detect.py` (5-check panel: burstiness, specificity, slop density, fingerprint, voice), rewriting up to 2 times on the weakest signal. `--send` is **hard-blocked** unless the draft scores `PASS` (`>= 70`, no check `< 55`).
+   - Do not bulk-spray before your first real conversation/dollar lands — verify dry-run quality first, earn the first reply/dollar cleanly, then scale with confidence.
 2. **Protect the accounts (anti-ban caps — non-negotiable).**
    - Cap outbound messages to **5–10 tailored, human-quality messages per day** — never blast identical bulk copy.
    - Never message the same author or thread twice (`add-lead` deduplicates automatically).

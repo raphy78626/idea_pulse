@@ -387,7 +387,13 @@ def build_review_packet(item_id):
         lines.append(f"Current offer idea: {item['what']} ({item['offer_money']}) -> {item['buyer']}")
     if item["body"]:
         lines.append(f"\nOriginal post excerpt:\n{item['body'][:1500]}")
-    lines.append("\nReply with:\n1. VERDICT: GO or SKIP (1-line reason)\n2. OFFER: exact concrete small deliverable + price\n3. MESSAGE: exact short message to send")
+    lines.append(
+        "\nReply with:\n"
+        "1. COMMON_SENSE: is there already a free built-in 2-minute fix (e.g. Bulk Editor / CSV / native setting)? If yes, VERDICT must be SKIP.\n"
+        "2. VERDICT: GO or SKIP (1-line reason)\n"
+        "3. OFFER: exact concrete small deliverable + price (only if they reply/DM)\n"
+        "4. MESSAGE: casual human reply (mix short + long sentences, contractions, NO prices, NO links, NO em dashes)"
+    )
     return {"ok": True, "item_id": item_id, "prompt": "\n".join(lines)}
 
 
@@ -716,11 +722,18 @@ def main(argv=None):
             return res.get("code", 1)
         act = res["action"]
         if act == "skipped":
-            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}"
+            cs = f"\nCommon sense: {res['common_sense']}" if res.get("common_sense") else ""
+            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}{cs}"
         elif act == "dry_run":
+            cs = f"Common:  {res['common_sense']}\n" if res.get("common_sense") else ""
+            hs = f"Human:   {res.get('human_score', 0):.1f} {res.get('human_verdict', '')}" + (
+                f" (weakest: {res['human_weakest']})" if res.get("human_verdict") != "PASS" and res.get("human_weakest") else ""
+            )
             txt = (f"DRY RUN [id:{res['item_id']}] {res['author']} ({res['critic_model']} -> {res['verdict']})\n"
                    f"Thread:  {res['thread_url']}\n"
+                   f"{cs}"
                    f"Offer:   {res['offer']}\n"
+                   f"{hs}\n"
                    f"Message:\n{res['message']}\n\n"
                    f"Re-run with --send to post ({res['sent_today']}/{res['daily_cap']} sent today).")
         else:
@@ -788,11 +801,18 @@ def main(argv=None):
             return res.get("code", 1)
         act = res["action"]
         if act == "skipped":
-            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}"
+            cs = f"\nCommon sense: {res['common_sense']}" if res.get("common_sense") else ""
+            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}{cs}"
         elif act == "dry_run":
+            cs = f"Common:  {res['common_sense']}\n" if res.get("common_sense") else ""
+            hs = f"Human:   {res.get('human_score', 0):.1f} {res.get('human_verdict', '')}" + (
+                f" (weakest: {res['human_weakest']})" if res.get("human_verdict") != "PASS" and res.get("human_weakest") else ""
+            )
             txt = (f"DRY RUN [id:{res['item_id']}] {res['author']} ({res['critic_model']} -> {res['verdict']})\n"
                    f"Tweet:   {res['thread_url']}\n"
+                   f"{cs}"
                    f"Offer:   {res['offer']}\n"
+                   f"{hs}\n"
                    f"Reply ({len(res['message'])} chars):\n{res['message']}\n\n"
                    f"Re-run with --send to post ({res['sent_today']}/{res['daily_cap']} sent today).")
         else:

@@ -115,25 +115,33 @@ def parse_critic_reply(text):
         return {"parsed": False, "verdict": "SKIP", "reason": "empty critic reply", "offer": "", "message": ""}
 
     # Normalize markdown bold/numbered prefixes on labels: "1. **VERDICT:** GO"
-    norm = re.sub(r"(?m)^\s*(?:\d+[\.\)]\s*)?\*{0,2}(VERDICT|OFFER|MESSAGE)\*{0,2}\s*:\s*\*{0,2}", r"\1: ", raw, flags=re.I)
+    norm = re.sub(
+        r"(?m)^\s*(?:\d+[\.\)]\s*)?\*{0,2}(COMMON_SENSE|VERDICT|OFFER|MESSAGE)\*{0,2}\s*:\s*\*{0,2}",
+        lambda m: m.group(1).upper() + ": ",
+        raw,
+        flags=re.I,
+    )
+
+    cm = re.search(r"(?ims)^COMMON_SENSE:\s*(.+?)(?=^(?:VERDICT|OFFER|MESSAGE):|\Z)", norm)
+    common_sense = cm.group(1).strip() if cm else ""
 
     vm = re.search(r"(?im)^VERDICT:\s*(GO|SKIP)\b(.*)$", norm)
     if not vm:
-        return {"parsed": False, "verdict": "SKIP", "reason": "could not parse VERDICT line", "offer": "", "message": ""}
+        return {"parsed": False, "common_sense": common_sense, "verdict": "SKIP", "reason": "could not parse VERDICT line", "offer": "", "message": ""}
     verdict = vm.group(1).upper()
     reason = vm.group(2).strip(" -—:.*")
 
-    om = re.search(r"(?ims)^OFFER:\s*(.+?)(?=^(?:MESSAGE|VERDICT):|\Z)", norm)
+    om = re.search(r"(?ims)^OFFER:\s*(.+?)(?=^(?:MESSAGE|VERDICT|COMMON_SENSE):|\Z)", norm)
     offer = om.group(1).strip() if om else ""
 
-    mm = re.search(r"(?ims)^MESSAGE:\s*(.+?)(?=^(?:VERDICT|OFFER|NOTES?):|\Z)", norm)
+    mm = re.search(r"(?ims)^MESSAGE:\s*(.+?)(?=^(?:VERDICT|OFFER|COMMON_SENSE|NOTES?):|\Z)", norm)
     message = mm.group(1).strip() if mm else ""
     # Strip wrapping quotes or code fences around MESSAGE
     message = re.sub(r"^```[a-z]*\s*|\s*```$", "", message, flags=re.I).strip()
     if len(message) >= 2 and message[0] == message[-1] and message[0] in ('"', "'"):
         message = message[1:-1].strip()
 
-    return {"parsed": True, "verdict": verdict, "reason": reason, "offer": offer, "message": message}
+    return {"parsed": True, "common_sense": common_sense, "verdict": verdict, "reason": reason, "offer": offer, "message": message}
 
 
 _PRICE_RE = re.compile(r"(?:[$₹€£]\s*\d+|\b\d+\s*(?:usd|inr|dollars?|rupees?|/mo|/month)\b)", re.I)
@@ -161,17 +169,22 @@ def validate_reply(text, allow_price=False, allow_links=False):
 
 
 CRITIC_SYSTEM = (
-    "You are a ruthless first-dollar sales critic for a solo software engineer "
+    "You are a ruthless, common-sense first-dollar sales critic for a solo software engineer "
     "(Python, FastAPI, Java, WhatsApp bots, AI/LLM automation) replying from a low-karma Reddit account.\n"
-    "IMPORTANT ANTI-REMOVAL RULE: Public comment #1 MUST be genuinely helpful first — give them a concrete "
-    "actionable tip or workflow fix, followed by ONE low-pressure offer like 'happy to script/automate this "
-    "for you if it helps, feel free to DM'. NEVER put prices ($/₹), dollar figures, URLs, or sales pitches in MESSAGE "
-    "(0-karma comments with prices or links get AutoMod-removed).\n"
-    "Evaluate one Reddit buyer post and reply in this EXACT 3-field format:\n"
+    "THINK TWICE — COMMON-SENSE CHECK FIRST:\n"
+    "- Does the platform/tool ALREADY have a free, built-in 2-minute way to solve this (e.g. Shopify Bulk Editor or CSV export/import, Excel filter, native setting, free official plugin)? "
+    "If yes, pitching custom scripts makes us look clueless — you MUST reply VERDICT: SKIP.\n"
+    "- Only say GO when there is a real recurring workflow gap a custom script/automation genuinely solves AND the buyer is likely to care.\n"
+    "HUMAN VOICE & ANTI-REMOVAL RULES FOR MESSAGE:\n"
+    "- Write like a real engineer typing casually on Reddit — NOT an AI assistant.\n"
+    "- Mix sentence lengths sharply (one very short 3-6 word sentence + one longer concrete sentence).\n"
+    "- Use natural contractions (I'd, don't, it's, won't) and first-person voice.\n"
+    "- NEVER use em dashes (—), curly quotes, prices ($/₹), URLs, or bot sign-offs like 'Happy to help — feel free to DM'.\n"
+    "Reply in this EXACT 4-field format:\n"
+    "COMMON_SENSE: 1-line check — is there already a free built-in 2-minute fix, or is custom automation genuinely needed?\n"
     "VERDICT: GO or SKIP — one-line reason\n"
-    "OFFER: concrete small done-for-you deliverable + price to propose once they DM/reply (or 'none' if SKIP)\n"
-    "MESSAGE: ONE short, genuinely helpful, non-salesy Reddit reply (under 75 words, plain human tone, "
-    "NO prices, NO links, NO hype, directly solves/addresses their exact pain; or 'none' if SKIP)"
+    "OFFER: concrete small done-for-you deliverable + price to propose only if they reply/DM (or 'none' if SKIP)\n"
+    "MESSAGE: ONE short, casual, genuinely helpful Reddit reply (under 70 words, NO prices, NO links, NO em dashes; or 'none' if SKIP)"
 )
 
 
@@ -359,8 +372,10 @@ def reply_to_pain(
     daily_cap=DAILY_CAP,
     critic_fn=ask_critic,
     post_fn=post_reddit_comment,
+    humanize_fn=None,
 ):
-    """Evaluate and (when send=True) post a single helpful Reddit reply for a verified PAIN."""
+    """Evaluate, humanize, and (when send=True) post a single helpful Reddit reply for a verified PAIN."""
+    import humanizer
     conn = _conn()
     try:
         item = conn.execute(
@@ -391,7 +406,8 @@ def reply_to_pain(
 
     # Critic gate (unless explicit message override provided)
     if message is not None:
-        parsed = {"verdict": "GO", "reason": "manual message override", "offer": "", "message": message.strip()}
+        parsed = {"parsed": True, "common_sense": "manual override", "verdict": "GO",
+                  "reason": "manual message override", "offer": "", "message": message.strip()}
         critic_model = "manual"
     else:
         pkt = cli.build_review_packet(item_id)
@@ -411,14 +427,34 @@ def reply_to_pain(
                 "author": f"u/{item['author']}" if item["author"] else "",
                 "thread_url": to_old_reddit(item["url"]),
                 "critic_model": critic_model,
+                "common_sense": parsed.get("common_sense", ""),
                 "verdict": parsed["verdict"],
                 "reason": parsed["reason"],
             }
 
-    valid, verr = validate_reply(parsed["message"])
+    # Humanize + score on the 5-check ig-human panel
+    if humanize_fn is not None:
+        hum = humanize_fn(parsed["message"])
+    else:
+        rw = None if message is not None else humanizer._default_rewrite
+        hum = humanizer.humanize_reply(parsed["message"], rewrite_fn=rw)
+    final_msg = hum["text"]
+
+    valid, verr = validate_reply(final_msg)
     if not valid:
         return {"ok": False, "error": f"Message failed hygiene check: {verr}", "code": 2,
-                "draft": parsed["message"]}
+                "draft": final_msg}
+
+    if send and hum["verdict"] != "PASS":
+        return {
+            "ok": False,
+            "error": f"Humanizer gate blocked send ({hum['human_score']:.1f} {hum['verdict']}; weakest: {hum['weakest']}). Rewrite before sending.",
+            "code": 2,
+            "draft": final_msg,
+            "human_score": hum["human_score"],
+            "human_verdict": hum["verdict"],
+            "human_weakest": hum["weakest"],
+        }
 
     out = {
         "ok": True,
@@ -427,10 +463,14 @@ def reply_to_pain(
         "author": f"u/{item['author']}" if item["author"] else "",
         "thread_url": to_old_reddit(item["url"]),
         "critic_model": critic_model,
+        "common_sense": parsed.get("common_sense", ""),
         "verdict": parsed["verdict"],
         "reason": parsed["reason"],
         "offer": parsed["offer"],
-        "message": parsed["message"],
+        "message": final_msg,
+        "human_score": hum["human_score"],
+        "human_verdict": hum["verdict"],
+        "human_weakest": hum["weakest"],
         "sent_today": used_today,
         "daily_cap": daily_cap,
     }
@@ -438,7 +478,7 @@ def reply_to_pain(
     if not send:
         return out
 
-    post_res = post_fn(item["url"], parsed["message"])
+    post_res = post_fn(item["url"], final_msg)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     if not post_res.get("ok"):
         conn = _conn()
@@ -447,7 +487,7 @@ def reply_to_pain(
                 "INSERT INTO outreach_log (item_id, prospect_id, channel, thread_url, author, message, "
                 "critic_model, critic_verdict, posted_url, status, error, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (item_id, None, "reddit", item["url"], item["author"] or "", parsed["message"],
+                (item_id, None, "reddit", item["url"], item["author"] or "", final_msg,
                  critic_model, parsed["verdict"], "", "error", post_res.get("error", "post failed"), now),
             )
             conn.commit()
@@ -469,7 +509,7 @@ def reply_to_pain(
             "INSERT INTO outreach_log (item_id, prospect_id, channel, thread_url, author, message, "
             "critic_model, critic_verdict, posted_url, status, error, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (item_id, pid, "reddit", item["url"], item["author"] or "", parsed["message"],
+            (item_id, pid, "reddit", item["url"], item["author"] or "", final_msg,
              critic_model, parsed["verdict"], post_res.get("posted_url", item["url"]), "sent", "", now),
         )
         conn.commit()
@@ -513,6 +553,7 @@ def run_batch(
     critic_fn=ask_critic,
     post_fn=post_reddit_comment,
     sleep_fn=time.sleep,
+    humanize_fn=None,
 ):
     """Run critic-gated Reddit outreach over top candidate pains up to limit / remaining daily cap."""
     conn = _conn()
@@ -548,6 +589,7 @@ def run_batch(
             daily_cap=daily_cap,
             critic_fn=critic_fn,
             post_fn=post_fn,
+            humanize_fn=humanize_fn,
         )
         results.append(r)
         if not r.get("ok"):

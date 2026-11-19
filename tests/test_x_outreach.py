@@ -90,19 +90,33 @@ def test_x_harvest_is_idempotent_and_reply_respects_dry_run_send_dup_and_cap(see
     assert sk["ok"] is True and sk["action"] == "skipped" and posted == []
 
     # Dry run validates & returns crisp reply without posting
+    pass_hum = lambda t: {"text": t, "human_score": 80.0, "verdict": "PASS", "weakest": "voice"}
+    flag_hum = lambda t: {"text": t, "human_score": 35.0, "verdict": "FLAGGED", "weakest": "burstiness"}
+
     dr = xo.reply_to_tweet(
         item_id, send=False,
         critic_fn=lambda p, **k: (GOOD_X_CRITIC, "llm", ""),
         post_fn=lambda u, m: posted.append(u) or {"ok": True},
+        humanize_fn=pass_hum,
     )
     assert dr["ok"] is True and dr["action"] == "dry_run" and posted == []
     assert len(dr["message"]) <= xo.MAX_REPLY_CHARS
+
+    # Robotic X reply is blocked when send=True
+    blk = xo.reply_to_tweet(
+        item_id, send=True,
+        critic_fn=lambda p, **k: (GOOD_X_CRITIC, "llm", ""),
+        post_fn=lambda u, m: posted.append(u) or {"ok": True},
+        humanize_fn=flag_hum,
+    )
+    assert blk["ok"] is False and "Humanizer gate blocked" in blk["error"] and posted == []
 
     # Live send posts once, logs to outreach_log (channel='x'), marks prospect contacted
     sent = xo.reply_to_tweet(
         item_id, send=True,
         critic_fn=lambda p, **k: (GOOD_X_CRITIC, "llm", ""),
         post_fn=lambda u, m: posted.append(u) or {"ok": True, "account": "@raphy78626", "posted_url": u},
+        humanize_fn=pass_hum,
     )
     assert sent["ok"] is True and sent["action"] == "sent" and len(posted) == 1
     assert sent["sent_today"] == 1 and sent["prospect_id"] is not None

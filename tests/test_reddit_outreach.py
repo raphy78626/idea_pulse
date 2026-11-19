@@ -40,10 +40,11 @@ def _pain_json(**kw):
     return json.dumps(d)
 
 
-GOOD_CRITIC = """1. **VERDICT:** GO — clear billing pain and active willingness to switch.
-2. **OFFER:** Done-for-you migration of recurring invoices to Stripe + Wave for $49 flat.
-3. **MESSAGE:**
-"Those NSF reversal fees are brutal. If you want off QuickBooks without rebuilding everything by hand, Wave + ACH or Invoice Ninja cuts those fees sharply. Happy to migrate one of your client invoice templates free so you can test the workflow — want me to set up a sample?"
+GOOD_CRITIC = """1. **COMMON_SENSE:** QuickBooks has no free built-in ACH fee workaround; migrating recurring templates is genuinely tedious.
+2. **VERDICT:** GO — clear billing pain and active willingness to switch.
+3. **OFFER:** Done-for-you migration of recurring invoices to Stripe + Wave for $49 flat.
+4. **MESSAGE:**
+"Those NSF fees are brutal. Honestly, I'd test Wave or Invoice Ninja with ACH first since QuickBooks won't budge on reversal fees. If you've got a pile of recurring client templates to move over, I can script the migration for you so you don't re-type them by hand. Ping me if you want help."
 """
 
 SKIP_CRITIC = """VERDICT: SKIP — too vague, no software fix.
@@ -87,8 +88,9 @@ def seeded(tmp_path, monkeypatch):
 def test_parse_critic_reply_extracts_verdict_offer_and_message():
     p = ro.parse_critic_reply(GOOD_CRITIC)
     assert p["verdict"] == "GO"
+    assert "QuickBooks" in p["common_sense"]
     assert "Stripe + Wave" in p["offer"]
-    assert p["message"].startswith("Those NSF reversal fees are brutal.")
+    assert p["message"].startswith("Those NSF fees are brutal.")
     assert not p["message"].endswith('"')
 
     s = ro.parse_critic_reply(SKIP_CRITIC)
@@ -138,19 +140,34 @@ def test_reply_refuses_builder_and_supports_dry_run_then_send_and_blocks_duplica
     assert sk["ok"] is True and sk["action"] == "skipped" and posts == []
 
     # Dry run validates & returns draft without calling post_fn
+    pass_hum = lambda t: {"text": t, "human_score": 82.0, "verdict": "PASS", "weakest": "voice"}
+    flag_hum = lambda t: {"text": t, "human_score": 38.0, "verdict": "FLAGGED", "weakest": "burstiness"}
+
     dr = ro.reply_to_pain(
         seeded["pains"][0], send=False,
         critic_fn=lambda p, **k: (GOOD_CRITIC, "gemini", ""),
         post_fn=lambda u, m: posts.append((u, m)) or {"ok": True},
+        humanize_fn=pass_hum,
     )
     assert dr["ok"] is True and dr["action"] == "dry_run" and posts == []
     assert dr["thread_url"].startswith("https://old.reddit.com/")
+    assert dr["human_verdict"] == "PASS"
+
+    # Robotic (FLAGGED) draft is blocked when send=True
+    blocked = ro.reply_to_pain(
+        seeded["pains"][0], send=True,
+        critic_fn=lambda p, **k: (GOOD_CRITIC, "gemini", ""),
+        post_fn=lambda u, m: posts.append((u, m)) or {"ok": True},
+        humanize_fn=flag_hum,
+    )
+    assert blocked["ok"] is False and "Humanizer gate blocked" in blocked["error"] and posts == []
 
     # Live send posts once, logs to outreach_log, and marks prospect contacted
     sent = ro.reply_to_pain(
         seeded["pains"][0], send=True,
         critic_fn=lambda p, **k: (GOOD_CRITIC, "gemini", ""),
         post_fn=lambda u, m: posts.append((u, m)) or {"ok": True, "user": "BlueberryImaginary46", "posted_url": u},
+        humanize_fn=pass_hum,
     )
     assert sent["ok"] is True and sent["action"] == "sent" and len(posts) == 1
     assert sent["sent_today"] == 1 and sent["prospect_id"] is not None
@@ -170,11 +187,13 @@ def test_reply_refuses_builder_and_supports_dry_run_then_send_and_blocks_duplica
 def test_daily_cap_stops_batch_and_platform_error_halts_immediately(seeded):
     # Daily cap = 1 allows only 1 post across 2 candidate pains
     calls = []
+    pass_hum = lambda t: {"text": t, "human_score": 82.0, "verdict": "PASS", "weakest": "voice"}
     res = ro.run_batch(
         limit=2, send=True, daily_cap=1, gap_s=0,
         critic_fn=lambda p, **k: (GOOD_CRITIC, "gemini", ""),
         post_fn=lambda u, m: calls.append(u) or {"ok": True, "user": "u", "posted_url": u},
         sleep_fn=lambda s: None,
+        humanize_fn=pass_hum,
     )
     assert res["ok"] is True and res["sent_now"] == 1 and len(calls) == 1
 
