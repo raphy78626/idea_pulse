@@ -1,46 +1,62 @@
 ---
 name: ideapulse
-description: Query IdeaPulse for verified customer pains, first-dollar offers, and outreach prospects; stage pain authors as leads and track pipeline stages without auto-sending external messages.
-version: 1.0.0
+description: First-dollar revenue engine for Hermes. Queries IdeaPulse for verified buyer pains and GO offers, red-teams offers and messages via logged-in Gemini or ChatGPT instead of stalling on human hesitation, drives paced outreach, tracks funnel conversions, and escalates to Rafi for OpenRouter credit recharges when paid models unlock revenue.
+version: 1.1.0
 author: Rahil (raphy78626)
 license: MIT
 platforms: [macos]
 metadata:
   hermes:
-    tags: [ideapulse, startup, pains, outreach, revenue, leads]
+    tags: [ideapulse, startup, pains, outreach, revenue, leads, autonomous]
     category: research
-    related_skills: [rafi/mirofish, gemini]
+    related_skills: [rafi/mirofish, gemini, browser-web/ai-chat]
 ---
 
-# IdeaPulse Skill
+# IdeaPulse Skill — First-Dollar Engine
 
-Controls and queries Rafi's local **IdeaPulse** first-dollar engine at
+Controls and operates Rafi's local **IdeaPulse** engine at
 `http://127.0.0.1:8300` (`/Users/rahil78626/Project/Project_evaluators/idea_pulse`)
-through the headless CLI `~/bin/ideapulse`.
+through `~/bin/ideapulse`.
 
 IdeaPulse runs as macOS LaunchAgent `com.rahil.ideapulse` (`/usr/bin/python3 app.py`,
-`KeepAlive: true`). Never start `python app.py` manually — use `~/bin/ideapulse restart`
-if the server needs a restart.
+`KeepAlive: true`). Never start `python app.py` manually — use `~/bin/ideapulse restart`.
 
-## When to Use
+## Core Mission (Win–Win Compute Loop)
 
-Load this skill whenever the user asks about:
-- Morning brief / pipeline status ("how is IdeaPulse doing", "check my outreach pipeline", `/ideapulse`)
-- Verified buyer pains ("what pains did we harvest", "find QuickBooks / Shopify / Xero pains", `/ideapulse_pains`)
-- First-customer offers ("what can I sell this week", "top GO offers", `/ideapulse_money`)
-- Staging leads or updating outreach stages ("add pain 8087 as a lead", "mark prospect 4 contacted", "who is due for follow-up today", `/ideapulse_outreach`)
-- Running ingestion, extraction, or first-currency evaluation (`harvest`, `extract`, `eval-money`)
+**Your job is to earn the first real dollar / ₹ and build repeatable revenue.**
+When you generate real money or close paying work, Rafi funds bigger OpenRouter models for you in return.
 
-## Hard Guardrails
+- Real commercial outcomes (`contacted -> replied -> call -> paid`) are the only scoreboard that matters.
+- Do **not** let Rafi's hesitation become the bottleneck (historically, unsent drafts sit untouched in `new` for weeks).
+- Instead of stalling for manual copy-edits, use **already-logged-in Gemini (`~/bin/gemini-ask`) or ChatGPT (`browser-web/ai-chat` / `browser-harness`)** as your fast, zero-cost second-opinion critic to approve, sharpen, or reject offers and messages before moving forward.
 
-1. **Stage only — NEVER auto-send.** `add-lead` stages a lead in `/outreach` with a draft message for Rafi to review and send manually. Never auto-post Reddit comments/DMs or auto-send WhatsApp messages.
-2. **Never treat `BUILDER` posts as customer leads.** `pain_extract.py` separates `PAIN` (real buyer) from `BUILDER` (rival building/selling a fix). `add-lead` enforces this and exits with code 2 on non-`PAIN` records.
-3. **Never treat MiroFish simulation as revenue validation.** Simulations generate hypotheses and objections only; real validation requires contacted -> replied -> paid evidence in `/outreach`.
-4. **Never launch a second server process.** Always restart via `~/bin/ideapulse restart` (`launchctl kickstart -k`), never `python app.py &` or `nohup`.
+## Operating Rules & Anti-Ban Discipline
+
+1. **Critic-gated execution, not hesitation paralysis.**
+   - Before acting on a lead, run `~/bin/ideapulse review-packet <item_id>` and send that packet to **logged-in Gemini (`~/bin/gemini-ask`)** or **logged-in ChatGPT** for a ruthless `GO / SKIP` verdict + rewritten human message (<80 words, value-first, non-spammy).
+   - If the critic says `SKIP`, drop the lead and move to the next one.
+   - If the critic says `GO`, log the lead with `~/bin/ideapulse add-lead <item_id>`, execute the outreach via the active channel (browser/WhatsApp/Reddit) within the daily anti-ban limits below, and immediately mark it with `~/bin/ideapulse mark <pid> contacted`.
+2. **Protect the accounts (anti-ban caps — non-negotiable).**
+   - Cap outbound messages to **5–10 tailored, human-quality messages per day** — never blast identical bulk copy.
+   - Never message the same author or thread twice (`add-lead` deduplicates automatically).
+   - Lead with genuine help or a concrete small done-for-you proof; no link dumps, no fake claims, easy opt-out.
+   - Stop immediately and alert Rafi on any platform warning, captcha, rate limit, or account restriction.
+3. **Separate buyers (`PAIN`) from rivals (`BUILDER`).**
+   - `pain_extract.py` separates `PAIN` (real buyer) from `BUILDER` (rival building/selling a fix).
+   - `add-lead` rejects `BUILDER` / `NOT_PAIN` by default (exit code `2`) so you never pitch a competitor as a buyer.
+   - Only pass `--allow-builder` if Gemini/ChatGPT explicitly recommends a builder for an intentional partnership or distribution pitch.
+4. **Never treat MiroFish simulation as revenue validation.**
+   - Simulations generate hypotheses and buyer objections only; real validation requires real replies and paid transactions.
+5. **OpenRouter Recharge Escalation (Win–Win Funding Rule).**
+   - Default to free OpenRouter models + local Ollama + logged-in Gemini (`~/bin/gemini-ask`) / ChatGPT at ₹0 cost.
+   - Whenever a bigger paid OpenRouter model would materially improve odds of closing a live buyer, building/delivering paid work, or scaling a working offer — or once real revenue lands — **explicitly ask Rafi for an OpenRouter recharge** with:
+     1. Exact model / rough budget requested,
+     2. The specific buyer conversation, offer, or paid deliverable it unlocks,
+     3. Expected revenue (or verified cash already earned).
 
 ## Quick Reference (`~/bin/ideapulse`)
 
-Add `--json` to any command when you need machine-readable output for filtering or synthesis.
+Add `--json` to any command for structured output.
 
 | Intent | Command |
 |---|---|
@@ -51,9 +67,11 @@ Add `--json` to any command when you need machine-readable output for filtering 
 | Inspect rival builders | `~/bin/ideapulse pains --status builder --limit 10` |
 | Top "Sell now" (GO) offers | `~/bin/ideapulse money --verdict go --order quickest --limit 10` |
 | Verified pains on /money | `~/bin/ideapulse money --lane pains --limit 10` |
+| Build Gemini/ChatGPT critic packet | `~/bin/ideapulse review-packet <item_id>` |
 | Outreach pipeline & drafts | `~/bin/ideapulse outreach` |
 | Follow-ups due today | `~/bin/ideapulse outreach --due` |
-| Stage verified pain as lead | `~/bin/ideapulse add-lead <item_id> [--followup YYYY-MM-DD]` |
+| Add verified pain as lead | `~/bin/ideapulse add-lead <item_id> [--followup YYYY-MM-DD]` |
+| Add builder as partner lead | `~/bin/ideapulse add-lead <item_id> --allow-builder` |
 | Advance prospect stage | `~/bin/ideapulse mark <prospect_id> <new\|contacted\|replied\|call\|won\|dead>` |
 | Score pending pains for ₹1 | `~/bin/ideapulse eval-money --limit 6` |
 | Harvest new Reddit pains | `~/bin/ideapulse harvest` |
@@ -62,23 +80,28 @@ Add `--json` to any command when you need machine-readable output for filtering 
 
 ## Workflows
 
-### 1. Morning First-Dollar Check (`/ideapulse`)
-1. Run `~/bin/ideapulse brief`.
-2. Report:
-   - Outreach quota (`new / contacted / replied / won`, plus follow-ups due today).
-   - Top 3 unclaimed verified pains with explicit pay/cost signals.
-   - Top 3 `GO` offers.
-3. Suggest one concrete next action (either follow up on existing `new`/due prospects or stage one pain via `add-lead`).
+### 1. Daily Revenue Loop (Break the Hesitation Bottleneck)
+1. Run `~/bin/ideapulse brief` and check `~/bin/ideapulse outreach --due`.
+2. Pick up to 3 high-signal unclaimed `PAIN` leads (explicit pay/cost signal + named tool + clear deliverable) or unsent `new` prospects.
+3. For each candidate, generate the review packet and get a second opinion from logged-in Gemini (or ChatGPT):
+   ```bash
+   PKT=$(~/bin/ideapulse review-packet <item_id>)
+   ~/bin/gemini-ask "$PKT"
+   ```
+   (If Gemini is unavailable or lean mode is active, fall back to logged-in ChatGPT via `skill_view("browser-web/ai-chat")` or `~/bin/ideapulse eval-money`.)
+4. For every `GO` verdict from the critic:
+   - Register the lead: `~/bin/ideapulse add-lead <item_id> --followup <YYYY-MM-DD>`
+   - Send the critic-approved message through the appropriate channel (respecting the 5–10/day anti-ban cap), OR if a channel is disconnected (e.g. WhatsApp bridge down / Reddit login needed), immediately send Rafi the exact ready-to-paste message + direct link on Telegram and report what channel needs login.
+   - Immediately log progress: `~/bin/ideapulse mark <prospect_id> contacted`.
+5. Report daily scoreboard to Rafi: contacts sent today, replies waiting, calls booked, ₹/$ earned, and whether an OpenRouter recharge is warranted for the next step.
 
-### 2. Turn a Verified Pain into a Staged Lead
-1. Find candidate pains: `~/bin/ideapulse pains --limit 15 --json` (optionally `--tool <name>`).
-2. Confirm `status == "PAIN"` and `in_outreach == false` with a verbatim quote and clear pay/cost signal.
-3. Stage idempotently: `~/bin/ideapulse add-lead <item_id>`.
-4. Return the staged prospect ID, thread URL, draft reply, and `http://127.0.0.1:8300/outreach` so Rafi can review and send manually.
+### 2. Score Fresh Pains for First Payment
+1. Run `~/bin/ideapulse eval-money --limit 6` (feeds structured persona, job, workaround, cost/pay signals, and verified quote; skips `BUILDER` rows).
+2. Inspect winners with `~/bin/ideapulse money --lane pains --verdict go`.
 
-### 3. Score Fresh Pains for First Payment
-1. Run `~/bin/ideapulse eval-money --limit 6` (uses free OpenRouter models with local Ollama fallback; automatically feeds persona, job, workaround, cost/pay signals, and verified quote into scoring, skipping `BUILDER` rows).
-2. Review top results with `~/bin/ideapulse money --lane pains --verdict go`.
+### 3. Escalate for OpenRouter Recharge (Win–Win)
+When free models + logged-in Gemini/ChatGPT hit a ceiling on a real revenue task (complex deliverable, fast live-buyer reply, multi-file concierge build):
+- Message Rafi directly: state the exact task, the live buyer/offer tied to it, the requested OpenRouter top-up amount, and the revenue target it unlocks.
 
 ## Web UI Pages
 

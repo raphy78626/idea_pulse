@@ -144,3 +144,16 @@ def test_add_lead_stages_pain_is_idempotent_and_refuses_builder(seeded_db, capsy
     # Pains list now reflects in_outreach=True
     rc5, pains = run_json(["pains", "--status", "pain"], capsys)
     assert rc5 == 0 and pains[0]["in_outreach"] is True
+
+
+def test_review_packet_and_allow_builder_flag(seeded_db, capsys):
+    rc, pkt = run_json(["review-packet", str(seeded_db["pain_id"])], capsys)
+    assert rc == 0 and pkt["ok"] is True
+    assert "3-doctor dental clinic owner" in pkt["prompt"]
+    assert "would gladly pay ₹2,000/mo" in pkt["prompt"]
+    assert "VERDICT: GO or SKIP" in pkt["prompt"]
+
+    # Intentional partner outreach to a BUILDER works only with explicit --allow-builder
+    rc2, res = run_json(["add-lead", str(seeded_db["builder_id"]), "--allow-builder"], capsys)
+    assert rc2 == 0 and res["ok"] is True and res["already_exists"] is False
+

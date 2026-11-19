@@ -249,8 +249,12 @@ def list_outreach(status="all", due_only=False, limit=30):
     return out
 
 
-def add_lead(item_id, followup=None, extra_notes=""):
-    """Stage an item into `prospects` idempotently. Refuses BUILDER / NOT_PAIN rows."""
+def add_lead(item_id, followup=None, extra_notes="", allow_builder=False):
+    """Stage an item into `prospects` idempotently.
+
+    Refuses BUILDER / NOT_PAIN rows by default so rivals are not pitched as
+    customers; pass allow_builder=True only for intentional partner outreach.
+    """
     conn = _conn()
     try:
         item = conn.execute("SELECT id, title, url, pitch, author, source FROM items WHERE id=?", (item_id,)).fetchone()
@@ -259,11 +263,12 @@ def add_lead(item_id, followup=None, extra_notes=""):
         pain = conn.execute(
             "SELECT status, persona, job, quote FROM pains WHERE item_id=?", (item_id,)).fetchone()
         if pain and pain["status"] != "PAIN":
-            return {
-                "ok": False,
-                "error": f"Item {item_id} has pain status {pain['status']} — refusing to stage non-PAIN as a customer lead.",
-                "code": 2,
-            }
+            if not (allow_builder and pain["status"] == "BUILDER"):
+                return {
+                    "ok": False,
+                    "error": f"Item {item_id} has pain status {pain['status']} — refusing to stage non-PAIN as a customer lead (use --allow-builder for intentional partner outreach).",
+                    "code": 2,
+                }
 
         existing = _existing_leads(conn)
         dup_id = _match_prospect_id(item["author"], item["url"], existing)
@@ -343,6 +348,47 @@ def mark_prospect(prospect_id, stage):
                 "old_status": row["status"], "new_status": stage}
     finally:
         conn.close()
+
+
+def build_review_packet(item_id):
+    """Self-contained second-opinion prompt for logged-in Gemini / ChatGPT."""
+    conn = _conn()
+    try:
+        item = conn.execute(
+            "SELECT id, title, url, meta, source, author, body, earn_verdict, what, buyer, offer_money "
+            "FROM items WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            return {"ok": False, "error": f"Item {item_id} not found"}
+        pain = conn.execute(
+            "SELECT status, persona, job, workaround, tools, cost_signal, pay_signal, quote "
+            "FROM pains WHERE item_id=?", (item_id,)).fetchone()
+    finally:
+        conn.close()
+
+    lines = [
+        "Act as a ruthless first-dollar sales critic for a solo software engineer (Python/FastAPI/Java/WhatsApp/AI).",
+        "Decide GO or SKIP on reaching out to this person today, and if GO, write ONE short, genuinely helpful, non-spammy reply/DM (under 80 words, no hype, no link dump, concrete small done-for-you offer).",
+        "",
+        f"Item ID: {item['id']} | Source: {item['source']} | Author: u/{item['author'] or 'unknown'}",
+        f"Title: {item['title']}",
+        f"Thread URL: {item['url']}",
+    ]
+    if pain:
+        lines.extend([
+            f"Pain status: {pain['status']}",
+            f"Persona: {pain['persona']}",
+            f"Job to be done: {pain['job']}",
+            f"Current workaround: {pain['workaround']}",
+            f"Cost signal: {pain['cost_signal']}",
+            f"Pay signal: {pain['pay_signal']}",
+            f'Verified quote: "{pain["quote"]}"',
+        ])
+    if item["what"] or item["offer_money"]:
+        lines.append(f"Current offer idea: {item['what']} ({item['offer_money']}) -> {item['buyer']}")
+    if item["body"]:
+        lines.append(f"\nOriginal post excerpt:\n{item['body'][:1500]}")
+    lines.append("\nReply with:\n1. VERDICT: GO or SKIP (1-line reason)\n2. OFFER: exact concrete small deliverable + price\n3. MESSAGE: exact short message to send")
+    return {"ok": True, "item_id": item_id, "prompt": "\n".join(lines)}
 
 
 def build_brief(check_server=True):
@@ -519,11 +565,16 @@ def main(argv=None):
     p_ou.add_argument("--limit", type=int, default=30)
     add_json(p_ou)
 
-    p_al = sub.add_parser("add-lead", help="Stage a verified PAIN (or item) into /outreach (never auto-sends)")
+    p_al = sub.add_parser("add-lead", help="Stage a verified PAIN (or item) into /outreach")
     p_al.add_argument("item_id", type=int)
     p_al.add_argument("--followup", default="", help="Optional YYYY-MM-DD follow-up date")
     p_al.add_argument("--notes", default="", help="Extra notes to append")
+    p_al.add_argument("--allow-builder", action="store_true", help="Allow staging a BUILDER for intentional partner outreach")
     add_json(p_al)
+
+    p_rp = sub.add_parser("review-packet", help="Generate a self-contained critic prompt for Gemini/ChatGPT")
+    p_rp.add_argument("item_id", type=int)
+    add_json(p_rp)
 
     p_mk = sub.add_parser("mark", help="Update a prospect's pipeline stage")
     p_mk.add_argument("prospect_id", type=int)
@@ -575,7 +626,8 @@ def main(argv=None):
         emit(rows, _fmt_outreach(rows))
         return 0
     if args.cmd == "add-lead":
-        res = add_lead(args.item_id, followup=args.followup or None, extra_notes=args.notes)
+        res = add_lead(args.item_id, followup=args.followup or None, extra_notes=args.notes,
+                       allow_builder=args.allow_builder)
         if not res["ok"]:
             emit(res, f"ERROR: {res['error']}")
             return res.get("code", 1)
@@ -583,6 +635,13 @@ def main(argv=None):
         txt = (f"{verb}: #{res['prospect_id']} {res['name']} ({res['business']}) [{res['status']}]\n"
                f"Review & send at: {res['outreach_url']}\n\nDraft message:\n{res['draft_message']}")
         emit(res, txt)
+        return 0
+    if args.cmd == "review-packet":
+        res = build_review_packet(args.item_id)
+        if not res["ok"]:
+            emit(res, f"ERROR: {res['error']}")
+            return 1
+        emit(res, res["prompt"])
         return 0
     if args.cmd == "mark":
         res = mark_prospect(args.prospect_id, args.stage)
