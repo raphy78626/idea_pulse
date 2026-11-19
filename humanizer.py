@@ -19,6 +19,21 @@ _CANDIDATE_DIRS = (
     Path.home() / ".claude" / "skills" / "ig-human",
 )
 
+_BLADER_SKILL_PATHS = (
+    Path(__file__).resolve().parent / "skills" / "humanizer" / "SKILL.md",
+    Path.home() / ".hermes" / "skills" / "humanizer" / "SKILL.md",
+    Path.home() / ".cursor" / "skills" / "humanizer" / "SKILL.md",
+    Path.home() / ".claude" / "skills" / "humanizer" / "SKILL.md",
+)
+
+
+def blader_skill_path():
+    """Return installed blader/humanizer v4.0.0 SKILL.md path, or None."""
+    for p in _BLADER_SKILL_PATHS:
+        if p.exists():
+            return p
+    return None
+
 
 def _skill_dir():
     for d in _CANDIDATE_DIRS:
@@ -105,16 +120,22 @@ def detect_score(text):
 
 
 REWRITE_SYSTEM = (
-    "Rewrite this short forum/X reply so it sounds like a real, experienced software engineer typing casually — "
-    "NOT an AI assistant.\n"
-    "Rules:\n"
+    "Rewrite this outreach draft using blader/humanizer (v4.0.0) so it reads like a real, experienced "
+    "software engineer typing casually to one person — NOT a chatbot.\n"
+    "Eliminate these AI tells (keep every supported fact/detail intact):\n"
+    "- §1 Not-X-but-Y contrasts ('not just X, it's Y', 'rather than X'). State the point directly.\n"
+    "- §2 One-line summary closers and dramatic fragments ('That's the real win.', 'Simple. Fast. Clean.').\n"
+    "- §3-§5 Fake-deep sayings ('at its core', 'what really matters'), staged run-ups, arguing with no one.\n"
+    "- §6-§8 Forced rule-of-three triads, repeated sentence openings, and em dashes (—) as connectors.\n"
+    "- §12-§16 Stock AI words (delve, leverage, robust, seamless, streamline, crucial, game-changer) and sales hype.\n"
+    "- §19-§22 Decorative bold, curly quotes, and chatbot residue ('Happy to help!', 'Feel free to DM', 'Let me know if that helps').\n"
+    "- §26 Re-explaining what the reader already knows — skip background they just wrote and get straight to the useful point.\n"
+    "Voice rules:\n"
     "- Mix sentence lengths sharply (one very short 3-6 word sentence + one longer concrete sentence).\n"
     "- Use natural contractions (I'd, don't, it's, won't, you're) and plain first-person voice.\n"
-    "- Include concrete tool/field/step specifics from the original draft.\n"
-    "- ZERO em dashes (—), ZERO curly quotes, ZERO hashtags, ZERO links, ZERO price tags ($/₹).\n"
-    "- Drop robotic sign-offs like 'Happy to help — feel free to DM' or 'Let me know if that helps'; "
-    "use something casual like 'DM me if you want me to whip up a quick script for it.'\n"
-    "- Output ONLY the rewritten reply text, nothing else."
+    "- Preserve placeholders like {link} or {name} untouched if present.\n"
+    "- ZERO em dashes (—), ZERO curly quotes, ZERO hashtags, ZERO invented facts.\n"
+    "- Output ONLY the final rewritten message text (embedded mode), nothing else."
 )
 
 

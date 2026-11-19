@@ -625,6 +625,12 @@ def main(argv=None):
     p_xb.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
     add_json(p_xb)
 
+    p_hu = sub.add_parser("humanize", help="Humanize + score any outreach draft (blader/humanizer + ig-human)")
+    p_hu.add_argument("--text", default="", help="Draft text (or pipe via stdin)")
+    p_hu.add_argument("--no-rewrite", action="store_true", help="Clean + score only without LLM rewrite pass")
+    p_hu.add_argument("--max-chars", type=int, default=0, help="Optional max character hint (e.g. 220 for X)")
+    add_json(p_hu)
+
     p_mk = sub.add_parser("mark", help="Update a prospect's pipeline stage")
     p_mk.add_argument("prospect_id", type=int)
     p_mk.add_argument("stage", choices=list(ip.STATUSES))
@@ -839,6 +845,21 @@ def main(argv=None):
                     lines.append(f"    reply: {r['message']}")
         emit(res, "\n".join(lines))
         return 0
+    if args.cmd == "humanize":
+        import humanizer
+        raw = args.text if args.text else sys.stdin.read()
+        if not raw.strip():
+            emit({"ok": False, "error": "no text provided (use --text or stdin)"}, "ERROR: no text provided")
+            return 1
+        rw = None if args.no_rewrite else humanizer._default_rewrite
+        res = humanizer.humanize_reply(raw, max_chars=(args.max_chars or None), rewrite_fn=rw)
+        res["ok"] = True
+        res["blader_skill"] = str(humanizer.blader_skill_path() or "")
+        txt = (f"Human score: {res['human_score']:.1f} {res['verdict']}"
+               + (f" (weakest: {res['weakest']})" if res["verdict"] != "PASS" and res["weakest"] else "")
+               + f" · rewrites={res['rewrites']} · artefacts_stripped={res['changes']}\n\n{res['text']}")
+        emit(res, txt)
+        return 0 if res["verdict"] == "PASS" else 2
     if args.cmd == "mark":
         res = mark_prospect(args.prospect_id, args.stage)
         if not res["ok"]:

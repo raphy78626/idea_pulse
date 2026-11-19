@@ -48,3 +48,43 @@ def test_robotic_draft_is_flagged_and_rewrite_passes():
     assert after["verdict"] == "PASS", f"human rewrite should PASS: {after}"
     assert after["human_score"] >= 70.0
     assert after["human_score"] > before["human_score"]
+
+
+def test_blader_humanizer_skill_is_installed_and_cli_works(capsys):
+    import json
+    import ideapulse_cli as cli
+
+    p = humanizer.blader_skill_path()
+    assert p is not None and p.exists()
+    content = p.read_text(encoding="utf-8")
+    assert "Not X but Y" in content and "Re-explaining what the reader knows" in content
+
+    rc = cli.main(["humanize", "--no-rewrite", "--text", HUMAN_REWRITE, "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True and out["verdict"] == "PASS" and out["human_score"] >= 70.0
+
+
+def test_pitch_endpoint_runs_humanizer(tmp_path, monkeypatch):
+    import app as ideapulse
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(ideapulse, "DB", tmp_path / "ideas.db")
+    ideapulse.save_items("Reddit pains", [
+        ("Invoice matching pain", "https://www.reddit.com/r/x/comments/h1/", "r/x", "pain", "body", "alice")
+    ])
+    conn = ideapulse.db()
+    iid = conn.execute("SELECT id FROM items LIMIT 1").fetchone()[0]
+    conn.close()
+
+    monkeypatch.setattr(ideapulse, "_or_chat", lambda *a, **k: (ROBOTIC_DRAFT, "test/m"))
+    monkeypatch.setattr(humanizer, "_default_rewrite", lambda *a, **k: HUMAN_REWRITE)
+
+    c = TestClient(ideapulse.app)
+    r = c.post(f"/pitch/{iid}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["status"] == "new"
+    assert d["human_verdict"] == "PASS"
+    assert "—" not in d["pitch"]
+

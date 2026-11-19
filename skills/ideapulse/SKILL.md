@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [ideapulse, startup, pains, outreach, revenue, leads, autonomous]
     category: research
-    related_skills: [rafi/mirofish, rafi/ig-human, gemini, browser-web/ai-chat]
+    related_skills: [humanizer, rafi/ig-human, rafi/mirofish, gemini, browser-web/ai-chat]
 ---
 
 # IdeaPulse Skill — First-Dollar Engine
@@ -34,7 +34,7 @@ When you generate real money or close paying work, Rafi funds bigger OpenRouter 
 
 1. **Think twice: Common-Sense Gate + `ig-human` PASS gate before every send.**
    - **Common-Sense Gate:** Before saying `GO`, the critic must check whether the tool already has a trivial free 2-minute built-in fix (e.g. Shopify Bulk Editor / CSV import, Excel filter, native setting). Pitching custom scripts when a free built-in fix exists looks clueless and MUST be `SKIP`.
-   - **Humanizer Gate (`ig-human`):** Every `GO` reply is automatically cleaned by `humanize.py` (strips invisible chars, em dashes, curly quotes, 154 slop terms) and scored by `detect.py` (5-check panel: burstiness, specificity, slop density, fingerprint, voice), rewriting up to 2 times on the weakest signal. `--send` is **hard-blocked** unless the draft scores `PASS` (`>= 70`, no check `< 55`).
+   - **Humanizer Gate (`blader/humanizer` v4.0.0 + `ig-human`):** Every `GO` reply and `/pitch` draft is rewritten under `blader/humanizer`'s 26 patterns (§1 not-X-but-Y, §2 one-line closers, §6 triads, §8 em dashes, §12-§16 slop/sales hype, §22 chatbot residue, §26 re-explaining known background), stripped of invisible artefacts by `humanize.py`, and scored by `detect.py`. `--send` is **hard-blocked** unless the draft scores `PASS` (`>= 70`, no check `< 55`). For any ad-hoc outreach draft, run `echo "..." | ~/bin/ideapulse humanize` or load `skill_view("humanizer")`.
    - Do not bulk-spray before your first real conversation/dollar lands — verify dry-run quality first, earn the first reply/dollar cleanly, then scale with confidence.
 2. **Protect the accounts (anti-ban caps — non-negotiable).**
    - Cap outbound messages to **5–10 tailored, human-quality messages per day** — never blast identical bulk copy.
@@ -76,6 +76,7 @@ Add `--json` to any command for structured output.
 | Harvest fresh live pain tweets from x.com | `~/bin/ideapulse x-harvest [--query "..."]` |
 | Dry-run / send critic-vetted X reply | `~/bin/ideapulse x-reply <item_id> [--critic llm] [--send]` |
 | Run paced X/Twitter outreach batch | `~/bin/ideapulse x-run --max 3 [--critic llm] [--send]` |
+| Humanize + score any outreach draft | `~/bin/ideapulse humanize --text "..."` (or pipe stdin) |
 | Outreach pipeline & drafts | `~/bin/ideapulse outreach` |
 | Follow-ups due today | `~/bin/ideapulse outreach --due` |
 | Add verified pain as lead | `~/bin/ideapulse add-lead <item_id> [--followup YYYY-MM-DD]` |

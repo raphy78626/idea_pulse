@@ -1028,11 +1028,14 @@ def pitch(item_id: int):
         max_tokens=1500, timeout=120)
     if not txt:
         return {"pitch": "", "status": f"failed: {model}"}
-    txt = txt.strip()[:900]
+    import humanizer
+    hum = humanizer.humanize_reply(txt.strip()[:900], rewrite_fn=humanizer._default_rewrite)
+    txt = hum["text"][:900]
     conn = db()
     conn.execute("UPDATE items SET pitch=? WHERE id=?", (txt, item_id))
     conn.commit(); conn.close()
-    return {"pitch": txt, "status": "new", "model": model}
+    return {"pitch": txt, "status": "new", "model": model,
+            "human_score": hum["human_score"], "human_verdict": hum["verdict"]}
 
 
 @app.post("/deepeval/{item_id}")
