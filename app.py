@@ -907,7 +907,7 @@ def _outreach_page(name="", status="all", prefill=0):
                 .replace("{{LEDE}}", esc(lede)).replace("{{TABS}}", tabs)
                 .replace("{{FORM_OPEN}}", " open" if prefill or not total else "")
                 .replace("{{CARDS}}", cards)
-                .replace("</body>", (prefill_js or "") + "</body>"))
+                .replace("{{PREFILL_JS}}", prefill_js or ""))
 
 
 app = FastAPI(title="IdeaPulse")

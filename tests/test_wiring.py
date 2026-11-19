@@ -202,6 +202,9 @@ def test_outreach_prefill_from_verified_pain_populates_lead_and_thread_action(cl
     r = client.get(f"/outreach?prefill={pain_id}")
     assert r.status_code == 200
     t = r.text
+    assert t.index("window.__PREFILL__=") < t.index("if (window.__PREFILL__)"), (
+        "prefill payload must be defined before outreach.html's script reads it"
+    )
     assert "u/bookkeeper_sam" in t
     assert "3-person bookkeeping shop owner" in t
     assert "pain_reply" in t
