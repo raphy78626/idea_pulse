@@ -106,18 +106,21 @@ def test_unparseable_critic_stub_returns_error_not_silent_skip(seeded):
     assert r["ok"] is False and r["code"] == 3
 
 
-def test_validate_reply_blocks_slop_and_spam_links():
-    ok, _ = ro.validate_reply("Those fees are rough. Wave + ACH works cleanly — happy to help migrate one template.")
+def test_validate_reply_blocks_slop_prices_and_links():
+    ok, _ = ro.validate_reply("Those fees are rough. Wave + ACH works cleanly — happy to help migrate one template if you DM me.")
     assert ok is True
 
     bad1, err1 = ro.validate_reply("VERDICT: GO\nMESSAGE: hi there")
     assert not bad1 and "verdict:" in err1.lower()
 
-    bad2, err2 = ro.validate_reply("Check https://a.com and https://b.com for a fix right now!")
-    assert not bad2 and "too many links" in err2
+    bad2, err2 = ro.validate_reply("Check https://a.com for a fix right now!")
+    assert not bad2 and "must not contain links" in err2
 
     bad3, _ = ro.validate_reply("Try my demo at https://foo.trycloudflare.com today!")
     assert not bad3
+
+    bad4, err4 = ro.validate_reply("I can script this for $200 one-time if you want to hire me today.")
+    assert not bad4 and "must not quote prices" in err4
 
 
 def test_reply_refuses_builder_and_supports_dry_run_then_send_and_blocks_duplicate(seeded):

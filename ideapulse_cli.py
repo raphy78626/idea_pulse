@@ -366,8 +366,8 @@ def build_review_packet(item_id):
         conn.close()
 
     lines = [
-        "Act as a ruthless first-dollar sales critic for a solo software engineer (Python/FastAPI/Java/WhatsApp/AI).",
-        "Decide GO or SKIP on reaching out to this person today, and if GO, write ONE short, genuinely helpful, non-spammy reply/DM (under 80 words, no hype, no link dump, concrete small done-for-you offer).",
+        "Act as a ruthless first-dollar sales critic for a solo software engineer (Python/FastAPI/Java/WhatsApp/AI) replying from a low-karma Reddit account.",
+        "Decide GO or SKIP on reaching out today. If GO, write ONE short, genuinely helpful Reddit reply (under 75 words, plain human tone, NO prices/dollar figures, NO links, NO hype — give a real actionable fix plus a soft 'happy to script this if helpful, feel free to DM').",
         "",
         f"Item ID: {item['id']} | Source: {item['source']} | Author: u/{item['author'] or 'unknown'}",
         f"Title: {item['title']}",
@@ -595,6 +595,30 @@ def main(argv=None):
     p_rb.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
     add_json(p_rb)
 
+    p_xc = sub.add_parser("x-check", help="Check X/Twitter Chrome login, daily cap, and top eligible X pain tweets")
+    add_json(p_xc)
+
+    p_xh = sub.add_parser("x-harvest", help="Harvest live pain tweets from x.com via logged-in Chrome")
+    p_xh.add_argument("--query", default="", help="Optional single custom X search query")
+    p_xh.add_argument("--limit", type=int, default=8, help="Max tweets per query (default 8)")
+    add_json(p_xh)
+
+    p_xr = sub.add_parser("x-reply", help="Critic-gate and (with --send) reply to a harvested X pain tweet")
+    p_xr.add_argument("item_id", type=int)
+    p_xr.add_argument("--send", action="store_true", help="Actually post reply on x.com (default: dry run)")
+    p_xr.add_argument("--message", default=None, help="Optional explicit reply text (skips critic call)")
+    p_xr.add_argument("--critic", default="auto", choices=["auto", "gemini", "llm"], help="Critic backend (default: auto)")
+    p_xr.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
+    add_json(p_xr)
+
+    p_xb = sub.add_parser("x-run", help="Run critic-gated X/Twitter outreach batch over harvested pain tweets")
+    p_xb.add_argument("--max", type=int, default=3, dest="max_n", help="Max tweets to process (default 3)")
+    p_xb.add_argument("--send", action="store_true", help="Actually post GO verdicts (default: dry run)")
+    p_xb.add_argument("--critic", default="auto", choices=["auto", "gemini", "llm"], help="Critic backend (default: auto)")
+    p_xb.add_argument("--gap", type=float, default=30.0, help="Seconds between live replies (default 30)")
+    p_xb.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
+    add_json(p_xb)
+
     p_mk = sub.add_parser("mark", help="Update a prospect's pipeline stage")
     p_mk.add_argument("prospect_id", type=int)
     p_mk.add_argument("stage", choices=list(ip.STATUSES))
@@ -721,6 +745,78 @@ def main(argv=None):
                 lines.append(f"  - [{r['action'].upper()}] id:{r['item_id']} {r['author']} — {r.get('reason', '')[:80]}")
                 if r.get("message"):
                     lines.append(f"    msg: {r['message'][:140]}")
+        emit(res, "\n".join(lines))
+        return 0
+    if args.cmd == "x-check":
+        import reddit_outreach as ro
+        import x_outreach as xo
+        login = xo.check_x_login()
+        conn = ro._conn()
+        try:
+            used = ro.sent_today(conn, "x")
+        finally:
+            conn.close()
+        cands = xo.candidate_x_items(limit=5)
+        res = {"login": login, "sent_today": used, "daily_cap": xo.DAILY_CAP, "candidates": cands}
+        who = login.get("account") or login.get("handle") or "logged in" if login.get("logged_in") else f"NOT LOGGED IN ({login.get('error', '')})"
+        lines = [
+            f"X Chrome:  {who}",
+            f"Daily cap: {used} / {xo.DAILY_CAP} sent today",
+            "Top eligible X pain tweets:",
+        ]
+        for c in cands:
+            lines.append(f"  - [id:{c['id']}] {c['author']} — {c['text'][:100]}")
+        if not cands:
+            lines.append("  (none yet — run `~/bin/ideapulse x-harvest`)")
+        emit(res, "\n".join(lines))
+        return 0 if login.get("logged_in") else 2
+    if args.cmd == "x-harvest":
+        import x_outreach as xo
+        qs = [args.query] if args.query else None
+        res = xo.harvest_x_pains(queries=qs, per_query=args.limit)
+        lines = [f"Harvested {res['fetched']} X pain tweets ({res['saved_new']} new saved)."]
+        for s in res["sample"]:
+            lines.append(f"  - {s}")
+        emit(res, "\n".join(lines))
+        return 0
+    if args.cmd == "x-reply":
+        import x_outreach as xo
+        cap = min(10, max(1, args.cap)) if args.cap else xo.DAILY_CAP
+        res = xo.reply_to_tweet(args.item_id, send=args.send, message=args.message, critic=args.critic, daily_cap=cap)
+        if not res.get("ok"):
+            emit(res, f"ERROR: {res.get('error')}")
+            return res.get("code", 1)
+        act = res["action"]
+        if act == "skipped":
+            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}"
+        elif act == "dry_run":
+            txt = (f"DRY RUN [id:{res['item_id']}] {res['author']} ({res['critic_model']} -> {res['verdict']})\n"
+                   f"Tweet:   {res['thread_url']}\n"
+                   f"Offer:   {res['offer']}\n"
+                   f"Reply ({len(res['message'])} chars):\n{res['message']}\n\n"
+                   f"Re-run with --send to post ({res['sent_today']}/{res['daily_cap']} sent today).")
+        else:
+            txt = (f"SENT [id:{res['item_id']}] to {res['author']} as {res.get('posted_as', '')}\n"
+                   f"Tweet:    {res.get('posted_url')}\n"
+                   f"Prospect: #{res.get('prospect_id')} [contacted] · follow up {res.get('followup')}\n"
+                   f"Daily:    {res['sent_today']}/{res['daily_cap']} sent today")
+        emit(res, txt)
+        return 0
+    if args.cmd == "x-run":
+        import x_outreach as xo
+        cap = min(10, max(1, args.cap)) if args.cap else xo.DAILY_CAP
+        res = xo.run_x_batch(limit=args.max_n, send=args.send, critic=args.critic, daily_cap=cap, gap_s=args.gap)
+        if not res.get("ok"):
+            emit(res, f"ERROR: {res.get('error')}")
+            return 2
+        lines = [f"X outreach batch ({res['mode']}) — sent_now={res['sent_now']} · today={res['sent_today']}/{res['daily_cap']}"]
+        for r in res["results"]:
+            if not r.get("ok"):
+                lines.append(f"  - ERROR: {r.get('error')}")
+            else:
+                lines.append(f"  - [{r['action'].upper()}] id:{r['item_id']} {r['author']} — {r.get('reason', '')[:80]}")
+                if r.get("message"):
+                    lines.append(f"    reply: {r['message']}")
         emit(res, "\n".join(lines))
         return 0
     if args.cmd == "mark":

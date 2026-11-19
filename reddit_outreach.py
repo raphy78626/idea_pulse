@@ -136,8 +136,11 @@ def parse_critic_reply(text):
     return {"parsed": True, "verdict": verdict, "reason": reason, "offer": offer, "message": message}
 
 
-def validate_reply(text):
-    """Return (ok, error_reason). Guards against spam, leaks, and empty replies."""
+_PRICE_RE = re.compile(r"(?:[$₹€£]\s*\d+|\b\d+\s*(?:usd|inr|dollars?|rupees?|/mo|/month)\b)", re.I)
+
+
+def validate_reply(text, allow_price=False, allow_links=False):
+    """Return (ok, error_reason). Guards against spam, leaks, and 0-karma AutoMod triggers."""
     msg = (text or "").strip()
     if len(msg) < 15:
         return False, "message too short (<15 chars)"
@@ -148,19 +151,27 @@ def validate_reply(text):
         if bad in low:
             return False, f"message contains disallowed marker: {bad!r}"
     urls = re.findall(r"https?://\S+", msg)
+    if not allow_links and urls:
+        return False, "public comment #1 must not contain links (avoids 0-karma AutoMod removal)"
     if len(urls) > 1:
         return False, f"too many links ({len(urls)}); max 1 allowed"
+    if not allow_price and _PRICE_RE.search(msg):
+        return False, "public comment #1 must not quote prices (avoids 0-karma AutoMod removal; keep it help-first + soft DM invite)"
     return True, ""
 
 
 CRITIC_SYSTEM = (
     "You are a ruthless first-dollar sales critic for a solo software engineer "
-    "(Python, FastAPI, Java, WhatsApp bots, AI/LLM automation). "
+    "(Python, FastAPI, Java, WhatsApp bots, AI/LLM automation) replying from a low-karma Reddit account.\n"
+    "IMPORTANT ANTI-REMOVAL RULE: Public comment #1 MUST be genuinely helpful first — give them a concrete "
+    "actionable tip or workflow fix, followed by ONE low-pressure offer like 'happy to script/automate this "
+    "for you if it helps, feel free to DM'. NEVER put prices ($/₹), dollar figures, URLs, or sales pitches in MESSAGE "
+    "(0-karma comments with prices or links get AutoMod-removed).\n"
     "Evaluate one Reddit buyer post and reply in this EXACT 3-field format:\n"
     "VERDICT: GO or SKIP — one-line reason\n"
-    "OFFER: concrete small done-for-you deliverable + price (or 'none' if SKIP)\n"
-    "MESSAGE: ONE short, genuinely helpful, non-spammy Reddit reply (under 80 words, "
-    "plain human tone, no hype, no link dumps, directly addresses their exact pain; or 'none' if SKIP)"
+    "OFFER: concrete small done-for-you deliverable + price to propose once they DM/reply (or 'none' if SKIP)\n"
+    "MESSAGE: ONE short, genuinely helpful, non-salesy Reddit reply (under 75 words, plain human tone, "
+    "NO prices, NO links, NO hype, directly solves/addresses their exact pain; or 'none' if SKIP)"
 )
 
 
