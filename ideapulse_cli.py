@@ -576,6 +576,25 @@ def main(argv=None):
     p_rp.add_argument("item_id", type=int)
     add_json(p_rp)
 
+    p_rc = sub.add_parser("reddit-check", help="Check Reddit Chrome login, daily cap, and top eligible PAIN leads")
+    add_json(p_rc)
+
+    p_rr = sub.add_parser("reddit-reply", help="Critic-gate and (with --send) post a helpful Reddit reply for a PAIN")
+    p_rr.add_argument("item_id", type=int)
+    p_rr.add_argument("--send", action="store_true", help="Actually post via logged-in Chrome (default: dry run)")
+    p_rr.add_argument("--message", default=None, help="Optional explicit reply text (skips critic call)")
+    p_rr.add_argument("--critic", default="auto", choices=["auto", "gemini", "llm"], help="Critic backend (default: auto = Gemini then LLM fallback)")
+    p_rr.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
+    add_json(p_rr)
+
+    p_rb = sub.add_parser("reddit-run", help="Run critic-gated Reddit outreach batch over top PAIN leads")
+    p_rb.add_argument("--max", type=int, default=3, dest="max_n", help="Max leads to process (default 3)")
+    p_rb.add_argument("--send", action="store_true", help="Actually post GO verdicts (default: dry run)")
+    p_rb.add_argument("--critic", default="auto", choices=["auto", "gemini", "llm"], help="Critic backend (default: auto)")
+    p_rb.add_argument("--gap", type=float, default=30.0, help="Seconds between live posts (default 30)")
+    p_rb.add_argument("--cap", type=int, default=0, help="Override daily cap (max 10)")
+    add_json(p_rb)
+
     p_mk = sub.add_parser("mark", help="Update a prospect's pipeline stage")
     p_mk.add_argument("prospect_id", type=int)
     p_mk.add_argument("stage", choices=list(ip.STATUSES))
@@ -642,6 +661,67 @@ def main(argv=None):
             emit(res, f"ERROR: {res['error']}")
             return 1
         emit(res, res["prompt"])
+        return 0
+    if args.cmd == "reddit-check":
+        import reddit_outreach as ro
+        login = ro.check_reddit_login()
+        conn = ro._conn()
+        try:
+            used = ro.sent_today(conn, "reddit")
+        finally:
+            conn.close()
+        cands = ro.candidate_pains(limit=5)
+        res = {"login": login, "sent_today": used, "daily_cap": ro.DAILY_CAP, "candidates": cands}
+        who = f"u/{login['user']}" if login.get("logged_in") else f"NOT LOGGED IN ({login.get('error', '')})"
+        lines = [
+            f"Reddit Chrome: {who}",
+            f"Daily cap:     {used} / {ro.DAILY_CAP} sent today",
+            "Top eligible verified pains:",
+        ]
+        for c in cands:
+            sig = c["pay_signal"] or c["cost_signal"] or ""
+            lines.append(f"  - [id:{c['id']}] {c['author']} — {c['job'][:80]}" + (f" ({sig[:50]})" if sig else ""))
+        emit(res, "\n".join(lines))
+        return 0 if login.get("logged_in") else 2
+    if args.cmd == "reddit-reply":
+        import reddit_outreach as ro
+        cap = min(10, max(1, args.cap)) if args.cap else ro.DAILY_CAP
+        res = ro.reply_to_pain(args.item_id, send=args.send, message=args.message, critic=args.critic, daily_cap=cap)
+        if not res.get("ok"):
+            emit(res, f"ERROR: {res.get('error')}")
+            return res.get("code", 1)
+        act = res["action"]
+        if act == "skipped":
+            txt = f"SKIP [id:{res['item_id']}] {res['author']} — {res['reason']}"
+        elif act == "dry_run":
+            txt = (f"DRY RUN [id:{res['item_id']}] {res['author']} ({res['critic_model']} -> {res['verdict']})\n"
+                   f"Thread:  {res['thread_url']}\n"
+                   f"Offer:   {res['offer']}\n"
+                   f"Message:\n{res['message']}\n\n"
+                   f"Re-run with --send to post ({res['sent_today']}/{res['daily_cap']} sent today).")
+        else:
+            txt = (f"SENT [id:{res['item_id']}] to {res['author']} as u/{res.get('posted_as', '')}\n"
+                   f"Posted:   {res.get('posted_url')}\n"
+                   f"Prospect: #{res.get('prospect_id')} [contacted] · follow up {res.get('followup')}\n"
+                   f"Daily:    {res['sent_today']}/{res['daily_cap']} sent today")
+        emit(res, txt)
+        return 0
+    if args.cmd == "reddit-run":
+        import reddit_outreach as ro
+        cap = min(10, max(1, args.cap)) if args.cap else ro.DAILY_CAP
+        res = ro.run_batch(limit=args.max_n, send=args.send, critic=args.critic, daily_cap=cap, gap_s=args.gap)
+        if not res.get("ok"):
+            emit(res, f"ERROR: {res.get('error')}")
+            return 2
+        lines = [f"Reddit outreach batch ({res['mode']}) — sent_now={res['sent_now']} · today={res['sent_today']}/{res['daily_cap']}"]
+        for r in res["results"]:
+            if not r.get("ok"):
+                lines.append(f"  - ERROR: {r.get('error')}")
+            else:
+                lines.append(f"  - [{r['action'].upper()}] id:{r['item_id']} {r['author']} — {r.get('reason', '')[:80]}")
+                if r.get("message"):
+                    lines.append(f"    msg: {r['message'][:140]}")
+        emit(res, "\n".join(lines))
         return 0
     if args.cmd == "mark":
         res = mark_prospect(args.prospect_id, args.stage)

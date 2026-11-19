@@ -68,6 +68,10 @@ Add `--json` to any command for structured output.
 | Top "Sell now" (GO) offers | `~/bin/ideapulse money --verdict go --order quickest --limit 10` |
 | Verified pains on /money | `~/bin/ideapulse money --lane pains --limit 10` |
 | Build Gemini/ChatGPT critic packet | `~/bin/ideapulse review-packet <item_id>` |
+| Check Reddit login, daily cap & top leads | `~/bin/ideapulse reddit-check` |
+| Dry-run Gemini-vetted Reddit reply | `~/bin/ideapulse reddit-reply <item_id>` |
+| Post Gemini-vetted Reddit reply (live) | `~/bin/ideapulse reddit-reply <item_id> --send` |
+| Run paced Reddit outreach batch (dry / live) | `~/bin/ideapulse reddit-run --max 3 [--send]` |
 | Outreach pipeline & drafts | `~/bin/ideapulse outreach` |
 | Follow-ups due today | `~/bin/ideapulse outreach --due` |
 | Add verified pain as lead | `~/bin/ideapulse add-lead <item_id> [--followup YYYY-MM-DD]` |
@@ -81,19 +85,16 @@ Add `--json` to any command for structured output.
 ## Workflows
 
 ### 1. Daily Revenue Loop (Break the Hesitation Bottleneck)
-1. Run `~/bin/ideapulse brief` and check `~/bin/ideapulse outreach --due`.
-2. Pick up to 3 high-signal unclaimed `PAIN` leads (explicit pay/cost signal + named tool + clear deliverable) or unsent `new` prospects.
-3. For each candidate, generate the review packet and get a second opinion from logged-in Gemini (or ChatGPT):
-   ```bash
-   PKT=$(~/bin/ideapulse review-packet <item_id>)
-   ~/bin/gemini-ask "$PKT"
-   ```
-   (If Gemini is unavailable or lean mode is active, fall back to logged-in ChatGPT via `skill_view("browser-web/ai-chat")` or `~/bin/ideapulse eval-money`.)
-4. For every `GO` verdict from the critic:
-   - Register the lead: `~/bin/ideapulse add-lead <item_id> --followup <YYYY-MM-DD>`
-   - Send the critic-approved message through the appropriate channel (respecting the 5–10/day anti-ban cap), OR if a channel is disconnected (e.g. WhatsApp bridge down / Reddit login needed), immediately send Rafi the exact ready-to-paste message + direct link on Telegram and report what channel needs login.
-   - Immediately log progress: `~/bin/ideapulse mark <prospect_id> contacted`.
-5. Report daily scoreboard to Rafi: contacts sent today, replies waiting, calls booked, ₹/$ earned, and whether an OpenRouter recharge is warranted for the next step.
+1. Run `~/bin/ideapulse reddit-check` to verify Chrome is signed in to Reddit, check today's daily cap (`X / 5`), and inspect top unclaimed `PAIN` leads.
+2. Run the Gemini-critic-gated Reddit outreach loop:
+   - Preview first if testing a new niche: `~/bin/ideapulse reddit-run --max 3`
+   - Execute live paced replies (auto-skips `SKIP` verdicts, enforces 5/day cap, deduplicates, checks archived/locked/errors, logs to `outreach_log`, and marks prospects `contacted` with a 3-day follow-up):
+     ```bash
+     ~/bin/ideapulse reddit-run --max 3 --send
+     ```
+   - Or target one specific pain: `~/bin/ideapulse reddit-reply <item_id> --send`
+3. Check `~/bin/ideapulse outreach --due` for follow-ups due today.
+4. Report daily scoreboard to Rafi: contacts sent today, replies waiting, calls booked, ₹/$ earned, and whether an OpenRouter recharge is warranted for the next step.
 
 ### 2. Score Fresh Pains for First Payment
 1. Run `~/bin/ideapulse eval-money --limit 6` (feeds structured persona, job, workaround, cost/pay signals, and verified quote; skips `BUILDER` rows).
